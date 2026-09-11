@@ -37,6 +37,7 @@ uniform vec3  uStone;         // warm, so the pillars read as objects in the roo
                               // rather than another shade of the sky behind them
 uniform float uSkyGain;
 uniform float uGain;
+uniform float uIntro;
 uniform float uLevels;
 uniform float uGrid;
 uniform vec4  uCol0;          // x, y, w, h of column body 1, in canvas px
@@ -58,7 +59,11 @@ void main() {
                + sin(uTime * 0.17 + vUv.y * 0.9) * uWobble * 0.6;
     float shiftPx = camN * uShift + bend;
 
-    // sampling the mask shifted is what moves the pillar itself
+    // Sampling the mask shifted moves the pillar itself - which means moving
+    // real architecture, and at the old 95 px that was the parallax reading as
+    // wrong rather than as depth. Kept tiny now. The pillar's SHADING still
+    // swings the full amount below, which is where the depth cue actually
+    // comes from and costs nothing in registration.
     vec2 suv = vUv - vec2(shiftPx / uCanvasW, 0.0);
     vec4 aux = texture(uAux, suv);
     float body = aux.g, trim = aux.b;
@@ -75,8 +80,11 @@ void main() {
     vec3  V  = normalize(vec3(camN * 0.45, 0.0, 1.0));   // the camera really does move
     vec3  R  = reflect(-V, N);
 
-    // stone that picks the sky up rather than mirroring it
-    vec3 env = skyEnv(R, uTime, uBands, uCloud, uCloudSpeed, uColor, uSkyGain, 0.85);
+    // A plain two-tone sky, not skyEnv: that call generates a cloud field, and
+    // there are no procedural clouds anywhere on this wall any more. The plate
+    // is the only texture, and it arrives via Lp below.
+    float up = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 env = mix(uColor * 0.10, uColor * 0.42 + vec3(0.02), up) * uSkyGain;
     float NoV = max(dot(N, V), 0.0);
 
     // NoV is 1 down the centre of the shaft and 0 at its edges, so this alone
@@ -94,13 +102,15 @@ void main() {
     float edge = smoothstep(0.0, 0.10, min(u, 1.0 - u));
     col *= mix(0.45, 1.0, edge);
 
+    // the plate shades the pillars too, harder than before - it is the base
+    // for everything on this wall, the pillars included
     float Lp = dot(texture(uPlate, vUv).rgb, vec3(0.2126, 0.7152, 0.0722));
-    col *= mix(0.65, 1.15, Lp);
+    col *= mix(0.45, 1.30, Lp);
     col *= mix(0.30, 1.10, uArc) * uGain;
 
     col = quantise(col, uLevels, uGrid, gl_FragCoord.xy);
     col *= texture(uMasks, vUv).a;        // a shifted pillar must still not light black
 
-    float a = solid;
+    float a = solid * uIntro;
     fragColor = vec4(col * a, a);         // premultiplied
 }

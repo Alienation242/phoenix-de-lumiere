@@ -183,8 +183,106 @@ def torus(major=1.0, minor=0.38, seg=96, ring=48):
     return _tris(v, t, n)
 
 
-SHAPES = {"sphere": sphere, "torus": torus, "cube": cube,
-          "diamond": diamond, "pyramid": pyramid}
+def knot(p=2, q=3, major=0.78, minor=0.34, tube=0.24, seg=380, ring=14):
+    """A (2,3) torus knot - a trefoil. Round, closed, and all curvature, which
+    is what a mirror finish needs.
+
+    The tube frame is taken from the centre circle of the containing torus
+    rather than from a Frenet frame. A Frenet frame flips at inflection points
+    and does not generally close up after one loop, leaving a visible twist
+    seam; this one is periodic in u by construction, so the tube closes exactly.
+    """
+    def curve(u):
+        rr = major + minor * math.cos(q * u)
+        return np.array([rr * math.cos(p * u), minor * math.sin(q * u),
+                         rr * math.sin(p * u)])
+
+    def centre(u):
+        return np.array([major * math.cos(p * u), 0.0, major * math.sin(p * u)])
+
+    v, n = [], []
+    for i in range(seg + 1):
+        u = 2.0 * math.pi * i / seg
+        P = curve(u)
+        T = curve(u + 1e-4) - curve(u - 1e-4)
+        T = T / max(float(np.linalg.norm(T)), 1e-9)
+        N = P - centre(u)
+        N = N - T * float(np.dot(N, T))
+        ln = float(np.linalg.norm(N))
+        N = N / ln if ln > 1e-9 else np.array([0.0, 1.0, 0.0])
+        B = np.cross(T, N)
+        for j in range(ring + 1):
+            ang = 2.0 * math.pi * j / ring
+            nrm = math.cos(ang) * N + math.sin(ang) * B
+            v.append(tuple(P + tube * nrm))
+            n.append(tuple(nrm))
+    t = []
+    row = ring + 1
+    for i in range(seg):
+        for j in range(ring):
+            aa, bb = i * row + j, i * row + j + 1
+            cc, dd = (i + 1) * row + j, (i + 1) * row + j + 1
+            t += [(aa, cc, dd), (aa, dd, bb)]
+    return _tris(v, t, n)
+
+
+def moebius(major=1.0, wide=0.33, thick=0.12, seg=300, ring=20):
+    """A Moebius TORUS: a solid ring with a half twist, not a paper band.
+
+    The cross-section is a flattened ellipse that rotates through 180 degrees
+    over one loop. A round cross-section would make the twist invisible - it is
+    the flattening that shows it - and giving it real volume is what separates
+    this from a ribbon: a closed surface with an inside and an outside, so the
+    chrome has something to be a solid of.
+
+    Closed exactly, because at u = 2*pi the frame has turned by pi, so the ring
+    of vertices there coincides with the ring at u = 0 offset by half a turn of
+    v. Generating u inclusive means those duplicates sit on top of each other
+    and the tube closes with nothing to see.
+    """
+    def surf(u, vv):
+        cu, su = math.cos(u), math.sin(u)
+        ch, sh = math.cos(u * 0.5), math.sin(u * 0.5)
+        cv, sv = math.cos(vv), math.sin(vv)
+        # the ellipse, rotated by half the loop angle
+        er = wide * cv * ch - thick * sv * sh      # along the radial direction
+        eu = wide * cv * sh + thick * sv * ch      # along the ring axis
+        rad = major + er
+        return np.array([rad * cu, eu, rad * su])
+
+    h = 1e-4
+    v, n = [], []
+    for i in range(seg + 1):
+        u = 2.0 * math.pi * i / seg
+        for j in range(ring + 1):
+            vv = 2.0 * math.pi * j / ring
+            P = surf(u, vv)
+            du = surf(u + h, vv) - surf(u - h, vv)
+            dv = surf(u, vv + h) - surf(u, vv - h)
+            nn = np.cross(du, dv)
+            ln = float(np.linalg.norm(nn))
+            nn = nn / ln if ln > 1e-12 else np.array([0.0, 1.0, 0.0])
+            v.append(tuple(P))
+            n.append(tuple(nn))
+    t = []
+    row = ring + 1
+    for i in range(seg):
+        for j in range(ring):
+            a, b = i * row + j, i * row + j + 1
+            c, d = (i + 1) * row + j, (i + 1) * row + j + 1
+            t += [(a, c, d), (a, d, b)]
+    return _tris(v, t, n)
+
+
+# Round shapes only. cube / pyramid / diamond are still defined above and still
+# work if you put them back in the mix, but flat facets cannot carry a mirror
+# finish: a flat face reflects one direction, so it renders as one flat colour.
+SHAPES = {"sphere": sphere, "torus": torus, "moebius": moebius, "knot": knot,
+          "cube": cube, "pyramid": pyramid, "diamond": diamond}
+
+# Bounding radius in model units, for keeping objects out of each other.
+SHAPE_RADIUS = {"sphere": 1.0, "torus": 1.38, "moebius": 1.36, "knot": 1.40,
+                "cube": 1.74, "pyramid": 1.70, "diamond": 1.50}
 
 
 # --------------------------------------------------------------------------- matrices
@@ -226,6 +324,22 @@ def smooth(x, a, b):
     return t * t * (3 - 2 * t)
 
 
+def smoother(x, a, b):
+    """Quintic ease. Zero first AND second derivative at both ends.
+
+    smoothstep only zeroes the first derivative, so where one eased stage hands
+    over to the next the ACCELERATION jumps even though the position and
+    velocity are continuous. The eye reads that as the motion changing gear -
+    the object visibly moving between states rather than simply moving. The
+    quintic removes it, which is why it is the standard for keyframe
+    interpolation, and it is what every stage boundary in object_state uses.
+    """
+    if b <= a:
+        return 1.0 if x >= b else 0.0
+    t = min(max((x - a) / (b - a), 0.0), 1.0)
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+
+
 # --------------------------------------------------------------------------- camera
 
 def camera_x(t, amp, period):
@@ -238,6 +352,26 @@ def camera_x(t, amp, period):
 
 # --------------------------------------------------------------------------- scene
 
+# The room, in canvas pixels. The wall is the plane z = 0.
+#
+# Deep on purpose. The camera is orthographic, so depth costs nothing on screen
+# - z only drives the depth buffer and the wall test - but a shallow room with
+# objects this big means every object's own radius is comparable to its distance
+# from the wall. Two consequences, both measured: an object at its near point
+# still had part of itself behind the wall plane and got clipped against the
+# openings mid-room, and everything piled into the same slab of depth so the
+# separation solver had to shove things hundreds of pixels sideways. Making the
+# room three times deeper costs a single float and removes both.
+Z_BACK = 1800.0     # how far beyond the wall an object starts and ends
+Z_NEAR = 2600.0     # nearest an object ever comes
+Z_NEAR_MIN = 700.0  # ... and the shyest one. Every object used to peak at the
+                    # same depth, so they all reached the pillars at their
+                    # closest point and every single one passed in front. Giving
+                    # each its own near point is what puts some of them behind.
+Z_LANE = 700.0      # spread of the per-object depth lane
+FAR_FRAC = 0.20     # size far out beyond the wall, as a fraction of opening size
+
+
 def pick_target_door(doors):
     """The big door in the middle. Nearest the canvas centre; it is also the
     largest of the three (757x754 against 556 and 589 wide), so both readings
@@ -245,36 +379,84 @@ def pick_target_door(doors):
     return min(doors, key=lambda d: abs(d["cx"] - CW * 0.5))
 
 
-def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0):
+def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
+                  speed=1.0, fit_margin=0.78):
     """Every object: in through a window, across the room, out through the big
     middle door. Out of the room is out of the piece - they do not come back."""
     rng = np.random.default_rng(seed)
-    wins = [o for o in openings if o["kind"] == "WINDOW"]
+    # One of the 27 "windows" is a 51 px slice at x 823, clipped in half by the
+    # left black block. It is a real opening but far too narrow to deliver
+    # anything through, and sizing an object from it gives a 50 px speck.
+    wins = [o for o in openings
+            if o["kind"] == "WINDOW" and o["w"] >= 150 and o["h"] >= 200]
     doors = [o for o in openings if o["kind"] == "DOOR"]
     if not wins or not doors:
         return []
     door = pick_target_door(doors)
-    # Weighted, not round-robin. A mirror finish reads best on curvature, so
-    # spheres and tori carry the look and the flat-faced solids punctuate it.
-    names = ["sphere", "torus", "sphere", "diamond", "torus", "cube",
-             "sphere", "pyramid"]
+
+    # Spread the entry points across the full width. Twelve independent random
+    # picks out of twenty-three windows clumps badly - measured, it put seven of
+    # the twelve in the right third and one in the left, mean entry x 6814 on a
+    # canvas whose centre is 4894, and used three windows twice while most were
+    # never used at all. Stratifying by x guarantees the whole wall is used;
+    # shuffling which stratum each object gets stops the entries sweeping left
+    # to right in step with time.
+    wins = sorted(wins, key=lambda o: o["cx"])
+    slots = list(range(count))
+    rng.shuffle(slots)
+
+    # Weighted, not round-robin, and no flat-faced solids: curvature is what
+    # carries a mirror finish.
+    names = ["sphere", "torus", "moebius", "knot", "torus", "sphere",
+             "knot", "moebius", "torus", "sphere"]
     objs = []
     for i in range(count):
-        w = wins[int(rng.integers(len(wins)))]
-        dur = float(rng.uniform(13.0, 22.0))
+        wi = int((slots[i] + 0.5) / float(max(count, 1)) * len(wins))
+        w = wins[min(wi, len(wins) - 1)]
+        dur = float(rng.uniform(19.0, 31.0)) / max(speed, 1e-3)
         # t0 is in SEGMENT time and must span the whole segment, not the chunk
         # being rendered. Spreading it over the chunk instead means a preview of
         # any sub-range lands entirely outside every object's lifetime and you
         # render an empty wall wondering what broke.
+        #
+        # Stratified, not uniform random: one entry per slot with jitter inside
+        # it. Twelve independent draws over two minutes clump badly - measured,
+        # it gave stretches of 30+ seconds with nothing on the wall and bursts of
+        # seven at once, which is both the empty feeling and the crowding.
         # Bias entries later: the plate is near-black until about 3:10, so the
         # segment should start almost empty and fill up.
-        u = float(rng.random()) ** 0.8
-        t0 = (t_lo - dur * 0.6) + u * ((t_hi - t_lo) + dur * 0.6)
+        # t_hi is the moment by which everything must be FINISHED, not the
+        # last moment something may start. Treating it as a start deadline let
+        # an object begin at 3:58 and still be mid-flight at 4:00, which is the
+        # opposite of a clean hand-off to the next wall.
+        u = (i + float(rng.uniform(0.12, 0.88))) / float(max(count, 1))
+        u = u ** 0.85
+        start_lo = t_lo - dur * 0.6
+        start_hi = t_hi - dur
+        t0 = start_lo + u * max(start_hi - start_lo, 0.0)
 
         # One in four is a hero. Uniform sizing reads as wallpaper however big
         # you make it; the hierarchy is what makes any of them feel like events.
         hero = (i % 4 == 0)
-        base = float(rng.uniform(0.95, 1.35)) * (1.55 if hero else 1.0)
+        base = float(rng.uniform(0.95, 1.30)) * (1.55 if hero else 1.0)
+
+        # How close this one ever comes. Size follows it: something that stays
+        # at the back of the room and is still drawn full size does not read as
+        # far away, it reads as wrong.
+        near_f = float(rng.random())
+
+        # size first, because the near depth has to clear the object's radius
+        _size = (max(220.0, min(680.0, float(w["w"]) * base))
+                 * obj_scale * (0.62 + 0.38 * near_f))
+
+        # Depth follows SIZE, not an independent roll. Rolling them separately
+        # gave objects passing in front of the pillars a mean radius of 509
+        # against 465 behind - statistically different, visually identical, so
+        # it never read as "the big ones come past in front". Tying them makes
+        # the biggest objects reliably the nearest, and the nearest are the ones
+        # the depth test lets through in front of a pillar.
+        _sn = min(max((_size - 140.0) / 540.0, 0.0), 1.0)
+        z_near = Z_NEAR_MIN + _sn * (Z_NEAR - Z_NEAR_MIN)
 
         wx, wy = float(w["cx"]), float(w["cy"])
         dx, dy = float(door["cx"]), float(door["cy"])
@@ -288,30 +470,61 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0):
         def wander():
             """Three incommensurate sines. Their sum never repeats inside the
             segment, which is the difference between drifting and orbiting."""
-            return [(float(rng.uniform(0.045, 0.21)),      # Hz
+            return [(float(rng.uniform(0.030, 0.135)),     # Hz
                      float(rng.uniform(0, 6.283)),         # phase
                      float(rng.uniform(0.30, 1.0)))        # weight
                     for _ in range(3)]
 
+        def wsum(w):
+            return sum(g for _, _, g in w) or 1.0
+
+        _wx, _wy = wander(), wander()
         objs.append(dict(
             shape=names[i % len(names)],
             p0=(wx, wy), c1=c1, c2=c2, p2=(dx, dy),
             win=(wx, wy, float(w["w"]) * 0.5, float(w["h"]) * 0.5),
             door=(dx, dy, float(door["w"]) * 0.5, float(door["h"]) * 0.5),
             t0=t0, dur=dur, hero=hero,
-            size=float(min(w["w"], w["h"])) * base * obj_scale,
-            wander_x=wander(), wander_y=wander(),
+            # Clamped at both ends. The opening it comes through sets the
+            # scale, but an upper window is 325 px and a lower one 600, so
+            # unclamped that is a 4x spread between objects doing the same job -
+            # and a hero from a lower window ends up 2800 px across, taller than
+            # the 2552 px canvas.
+            size=_size,
+            # Never nearer to the wall than its own radius, or part of the shape
+            # is behind the wall plane at its closest point and gets clipped
+            # against the openings out in the middle of the room.
+            z_near=max(z_near, _size * SHAPE_RADIUS.get(names[i % len(names)], 1.4) * 1.30),
+            # The largest this shape may be while it is IN the opening, in the
+            # same model units as `size`. SHAPE_RADIUS converts model units to a
+            # projected radius, so this is simply the opening's smaller half
+            # dimension, with a margin, converted back.
+            fit_win=min(float(w["w"]), float(w["h"])) * 0.5 * fit_margin
+                    / SHAPE_RADIUS.get(names[i % len(names)], 1.4),
+            fit_door=min(float(door["w"]), float(door["h"])) * 0.5 * fit_margin
+                     / SHAPE_RADIUS.get(names[i % len(names)], 1.4),
+            wander_x=_wx, wander_y=_wy,
+            # normalisers, so the wander can be used as a bounded -1..1 signal
+            # when it has to stay inside a hole
+            wsum_x=wsum(_wx), wsum_y=wsum(_wy),
             drift=drift * (190.0 if hero else 130.0),
             bob=float(rng.uniform(35.0, 95.0)) * drift,
-            bob_w=float(rng.uniform(0.09, 0.24)),
+            bob_w=float(rng.uniform(0.055, 0.15)),
             bob_p=float(rng.uniform(0, 6.283)),
-            spin=(float(rng.uniform(-0.20, 0.20)), float(rng.uniform(-0.26, 0.26)),
-                  float(rng.uniform(-0.14, 0.14))),
+            # Faster than it looks written down: at the old rates a sphere
+            # turned about 7 degrees a second, which on a mirrored surface is
+            # not enough for the reflection to sweep and the shape to read as
+            # solid rather than painted.
+            spin=(float(rng.uniform(-0.32, 0.32)), float(rng.uniform(-0.42, 0.42)),
+                  float(rng.uniform(-0.22, 0.22))),
+            # a persistent depth lane, so two objects rarely sit at the same z
+            # and the separation solver almost never hits the degenerate case
+            lane=float(rng.uniform(-1.0, 1.0)),
             # precession: a slow wobble ON TOP of the spin. Nothing in the real
             # world rotates at a perfectly constant rate about a fixed axis, and
             # the eye reads that immediately as machinery.
-            rot_w=(float(rng.uniform(0.09, 0.27)), float(rng.uniform(0.07, 0.23)),
-                   float(rng.uniform(0.11, 0.31))),
+            rot_w=(float(rng.uniform(0.06, 0.17)), float(rng.uniform(0.05, 0.15)),
+                   float(rng.uniform(0.07, 0.20))),
             rot_p=(float(rng.uniform(0, 6.283)), float(rng.uniform(0, 6.283)),
                    float(rng.uniform(0, 6.283))),
             tint=np.array([rng.uniform(0.86, 1.0), rng.uniform(0.88, 1.0),
@@ -327,31 +540,80 @@ def bez3(p0, c1, c2, p2, t):
             a*p0[1] + b*c1[1] + c*c2[1] + d*p2[1])
 
 
-def _opening_nearness(x, y, rect):
-    """1 when the object sits squarely in this opening, 0 once it is clear of it.
+def resolve_overlaps(live, margin, iterations=7, damping=0.55):
+    """Push objects apart so their geometry never interpenetrates.
 
-    Normalised by the opening's own half-size, so a 325 px window and a 757 px
-    door both behave the same way without separate tuning.
+    Two mirrored solids passing through one another is the one artefact that
+    reads as fake instantly - real objects occlude, they do not merge.
+
+    JACOBI, NOT GAUSS-SEIDEL. Every pair force is measured against the same
+    snapshot and applied together at the end of the sweep. The obvious version
+    updates positions inside the pair loop, which makes the outcome depend on
+    the order pairs happen to be visited - and once four or more objects crowd
+    each other there is more than one valid arrangement, so a hair's difference
+    in input flips it to a different one. Measured, that cost up to 771 px of
+    movement in a single frame while the underlying paths moved 15.
+
+    Damped and iterated instead: each sweep closes about half the remaining
+    overlap, so seven sweeps land within a fraction of a pixel, and the result
+    is a continuous function of the input - which is what actually guarantees no
+    popping, rather than any amount of clamping.
+
+    Force is scaled by both objects' presence, so one materialising at a window
+    ramps its influence up from nothing instead of shoving its neighbour aside
+    the instant it appears. Mobility decides who yields: an object still in its
+    opening is pinned and takes none of the correction.
     """
-    cx, cy, hw, hh = rect
-    dx = (x - cx) / max(hw, 1e-3)
-    dy = (y - cy) / max(hh, 1e-3)
-    return 1.0 - smooth(math.sqrt(dx * dx + dy * dy), 0.45, 1.25)
+    n = len(live)
+    if n < 2:
+        return
+    rad = [l["scale"] * SHAPE_RADIUS.get(l["o"]["shape"], 1.4) for l in live]
+    mob = [max(l["alpha"] * l["clear"], 0.0) for l in live]
+    pres = [min(max(l["alpha"] * l["clear"], 0.0), 1.0) for l in live]
+    for _ in range(iterations):
+        delta = [np.zeros(3, "f4") for _ in range(n)]
+        for i in range(n):
+            for j in range(i + 1, n):
+                mi, mj = mob[i], mob[j]
+                if mi + mj <= 1e-5:
+                    continue
+                d = live[j]["pos"] - live[i]["pos"]
+                dist = float(np.linalg.norm(d))
+                need = (rad[i] + rad[j]) * margin
+                if dist >= need:
+                    continue
+                if dist < 1e-4:
+                    d = np.array([0.0, 0.0, 1.0], "f4")
+                    dist = 1e-4
+                nrm = d / dist
+                if abs(float(nrm[2])) < 0.35:
+                    sgn = 1.0 if live[i]["o"]["lane"] < live[j]["o"]["lane"] else -1.0
+                    blend = 1.0 - abs(float(nrm[2])) / 0.35
+                    nrm = nrm + np.array([0.0, 0.0, sgn * blend * 1.2], "f4")
+                    nrm = nrm / max(float(np.linalg.norm(nrm)), 1e-6)
+                corr = nrm * ((need - dist) * damping * pres[i] * pres[j])
+                corr[0] *= 0.9
+                corr[1] *= 0.9
+                corr[2] *= 1.6
+                s = mi + mj
+                delta[i] = delta[i] - corr * (mi / s)
+                delta[j] = delta[j] + corr * (mj / s)
+        for i in range(n):
+            live[i]["pos"] = live[i]["pos"] + delta[i]
 
 
 def object_state(o, t):
-    """(pos, scale, alpha, w_outside, depth01) or None if not on screen.
+    """(pos, wall_z, scale, alpha, depth01) or None if not on screen.
 
-    w_outside is the crossfade that sells the whole idea. At the start the
-    object is beyond the wall and is drawn ONLY where its window is, so it
-    reads as arriving from outside. It comes through, crosses the room fully
-    visible, then goes back outside through the door and is clipped again.
+    `wall_z` is the object centre's signed distance from the wall plane:
+    negative is out beyond the wall, positive is inside the room. The shader
+    clips per fragment against it, so an object halfway through a doorway is
+    genuinely half clipped.
 
-    It is driven by DISTANCE TO THE OPENING, not by path progress. Tying it to
-    progress means the crossfade fires at whatever point in the curve you tuned
-    it for, and since every object gets a different bezier, objects would start
-    being clipped while still hundreds of pixels short of the door - vanishing
-    beside the doorway instead of passing through it.
+    pos[2] carries the same value plus a per-object depth lane, which is what
+    the separation solver and the depth buffer use. Keeping the two apart means
+    shoving objects around in z to stop them intersecting cannot accidentally
+    push one through the wall.
     """
     p = (t - o["t0"]) / o["dur"]
     if p <= 0.0 or p >= 1.0:
@@ -361,36 +623,82 @@ def object_state(o, t):
     # biggest reason CG motion reads as computed - real things accelerate away
     # and settle in. Full smoothstep is the opposite mistake: it stalls the
     # object exactly at the openings, which is where it most needs to be moving.
-    pe = p + (smooth(p, 0.0, 1.0) - p) * 0.45
+    pe = p + (smoother(p, 0.0, 1.0) - p) * 0.45
 
-    x, y = bez3(o["p0"], o["c1"], o["c2"], o["p2"], pe)
+    # ---- where it is, across the wall ----------------------------------
+    # `travel` is held at 0 until the object is through the window and pinned
+    # at 1 once it reaches the door, so the crossing itself happens with the
+    # object dead centre in its opening. Running the bezier on pe directly
+    # carried it 260-440 px off the opening by the time it reached the wall
+    # plane - through solid masonry, where the mask has nothing to clip it to.
+    travel = smoother(pe, 0.10, 0.90)
+    x, y = bez3(o["p0"], o["c1"], o["c2"], o["p2"], travel)
 
-    # Low-frequency wander, faded out at both ends by `env` so the object still
-    # arrives exactly on its window and exactly in the doorway. Without this the
-    # path is a curve a computer drew; with it the object is drifting through a
-    # room and happens to be going somewhere.
-    env = math.sin(math.pi * pe)
+    # ---- how far through the wall --------------------------------------
+    # `through` is 0 out beyond the wall, 1 in the room: a fast, clean passage.
+    # `arc` is the slow swell toward the viewer and back. Separating them lets
+    # the object come THROUGH the hole quickly and then approach slowly, instead
+    # of doing both on one curve.
+    through = smoother(pe, 0.0, 0.18) - smoother(pe, 0.82, 1.0)
+    arc = math.sin(math.pi * min(max(pe, 0.0), 1.0)) ** 0.7
+    wall_z = -Z_BACK * (1.0 - through) + o["z_near"] * arc * through
+
+    # ---- how big ---------------------------------------------------------
+    # Four stages, chained, so the size is ALWAYS moving:
+    #
+    #   far outside  ->  exactly opening-sized at the crossing
+    #                ->  full size out in the room
+    #                ->  door-sized at the far crossing
+    #                ->  small again, receding away outside
+    #
+    # It grows the whole way in, not just after it is indoors. Holding it at a
+    # flat opening-size until it was through is what made it look like it only
+    # started approaching once it had already arrived.
+    #
+    # An object 1.5-4x wider than its window cannot pass through it, and the
+    # renderer can only answer by showing a window-shaped bite out of it, so the
+    # fitted sizes are a hard ceiling at both holes.
+    # The stages OVERLAP now. Butted end to end there was a dead gap between
+    # each one where nothing changed, so the object held still and then set off
+    # again - which is most of what "transitioning between states" was.
+    far_in = o["fit_win"] * FAR_FRAC
+    far_out = o["fit_door"] * FAR_FRAC
+    base = far_in + (o["fit_win"] - far_in) * smoother(pe, 0.0, 0.14)
+    base = base + (o["size"] - base) * smoother(pe, 0.10, 0.40)
+    base = base + (o["fit_door"] - base) * smoother(pe, 0.60, 0.90)
+    base = base + (far_out - base) * smoother(pe, 0.86, 1.0)
+    # the swell multiplier peaks at 1.0, so it can never lift base over the fit
+    scale = base * (0.88 + 0.12 * arc)
+
+    # ---- drift, only once it is clear of the wall -------------------------
+    # Enveloped by `clear` rather than by the arc. The arc is still 0.79 at the
+    # moment the object is in the window, which would let the wander shove it
+    # sideways out of its own opening mid-crossing.
+    clear = smoother(pe, 0.10, 0.40) * (1.0 - smoother(pe, 0.60, 0.90))
     wx = sum(g * math.sin(2 * math.pi * f * t + ph) for f, ph, g in o["wander_x"])
     wy = sum(g * math.sin(2 * math.pi * f * t + ph) for f, ph, g in o["wander_y"])
-    x += wx * o["drift"] * env
-    y += wy * o["drift"] * 0.55 * env
-    y += math.sin(2 * math.pi * o["bob_w"] * t + o["bob_p"]) * o["bob"] * env
+    x += wx * o["drift"] * clear
+    y += wy * o["drift"] * 0.55 * clear
+    y += math.sin(2 * math.pi * o["bob_w"] * t + o["bob_p"]) * o["bob"] * clear
 
-    # 0 at both openings, 1 at the near point in the middle of the room
-    depth = math.sin(math.pi * min(max(pe, 0.0), 1.0)) ** 0.75
+    # ---- a little life in the doorway too ---------------------------------
+    # Pinning the object dead centre while it threads the opening is what made
+    # the entry and exit read as mechanical. It can move - just not more than
+    # the hole actually has room for. The wander is normalised to -1..1 here
+    # and scaled by the REAL remaining clearance, so this can never be what
+    # pushes a shape into a frame.
+    rect = o["win"] if pe < 0.5 else o["door"]
+    half = min(rect[2], rect[3])
+    rad = scale * SHAPE_RADIUS.get(o["shape"], 1.4)
+    slack = max(half - rad, 0.0) * 0.45
+    in_hole = 1.0 - clear
+    x += (wx / o["wsum_x"]) * slack * in_hole
+    y += (wy / o["wsum_y"]) * slack * 0.7 * in_hole
 
-    scale = o["size"] * (0.30 + 0.85 * depth)
-    alpha = smooth(pe, 0.0, 0.04) * (1.0 - smooth(pe, 0.96, 1.0))
+    alpha = smoother(pe, 0.0, 0.015) * (1.0 - smoother(pe, 0.99, 1.0))
 
-    # outside -> inside -> outside. The progress terms only gate WHICH opening
-    # can claim it, so an object drifting past an unrelated window is not
-    # suddenly cut in half by it.
-    w_win = (1.0 - smooth(pe, 0.0, 0.40)) * _opening_nearness(x, y, o["win"])
-    w_door = smooth(pe, 0.45, 0.98) * _opening_nearness(x, y, o["door"])
-    w_out = min(max(max(w_win, w_door), 0.0), 1.0)
-
-    z = -600.0 + 1200.0 * depth
-    return (np.array([x, y, z], "f4"), scale, alpha, w_out, depth)
+    z = wall_z + o["lane"] * Z_LANE
+    return (np.array([x, y, z], "f4"), wall_z, scale, alpha, arc, clear)
 
 
 # --------------------------------------------------------------------------- textures
@@ -431,9 +739,36 @@ def main():
     ap.add_argument("--hq", action="store_true", help="use the ProRes masters from source_hq")
     ap.add_argument("--no-objects", action="store_true")
     ap.add_argument("--no-pillars", action="store_true")
-    ap.add_argument("--objects", type=int, default=26)
+    ap.add_argument("--objects", type=int, default=12,
+                    help="total across the whole segment, NOT at once. 12 gives "
+                         "about 2-3 on screen at a time")
     ap.add_argument("--obj-scale", type=float, default=1.0,
                     help="overall object size multiplier")
+    ap.add_argument("--speed", type=float, default=1.0,
+                    help="lower is slower. divides every object's travel time")
+    ap.add_argument("--fit-margin", type=float, default=0.78,
+                    help="how much of an opening an object may fill as it passes "
+                         "through. 1.0 touches the frame exactly; leave headroom")
+    ap.add_argument("--intro", type=float, default=2.0,
+                    help="seconds to blend from the bare shared plate into the full "
+                         "treatment, measured from the segment IN point (not from "
+                         "the render start, so handles show untouched noise and a "
+                         "chunked render cannot repeat the intro)")
+    ap.add_argument("--outro", type=float, default=1.2,
+                    help="seconds before the segment OUT point over which any "
+                         "remaining object is faded out, so 4:00 hands over clean")
+    ap.add_argument("--emerge", type=float, default=0.85,
+                    help="how completely the oil claims an object that is still "
+                         "out beyond the wall")
+    ap.add_argument("--fog", type=float, default=0.48,
+                    help="how hard the outside air knocks back an object beyond the "
+                         "wall. lower is heavier")
+    ap.add_argument("--wall-fade", type=float, default=105.0,
+                    help="softness of the wall plane, in canvas px. small is sharp; "
+                         "0 would alias along the cut")
+    ap.add_argument("--separation", type=float, default=1.18,
+                    help="keep-apart margin as a multiple of the two radii. 0 disables, "
+                         "raise it to open the arrangement up further")
     ap.add_argument("--drift", type=float, default=1.0,
                     help="how far objects wander off their path. 0 = dead-straight "
                          "bezier, which reads as computed")
@@ -454,43 +789,70 @@ def main():
                     help="ordered-dither cell in RENDER pixels. Keep it at 1: see the "
                          "note by uGrid below.")
     ap.add_argument("--cloud", type=float, default=0.55)
+    ap.add_argument("--plate-drive", type=float, default=0.75,
+                    help="how hard the plate's own dither drives the sky bands. "
+                         "1.0 = the wall IS the plate, recoloured; 0 = a plain "
+                         "gradient with no texture at all")
+    ap.add_argument("--plate-contrast", type=float, default=3.2,
+                    help="how hard the plate's dither swings around the frame's own "
+                         "mean. this is what keeps the near-black opening from "
+                         "collapsing into one flat band")
     ap.add_argument("--plate-mix", type=float, default=0.55)
     ap.add_argument("--horizon", type=float, default=0.34)
     ap.add_argument("--bands", type=float, default=12.0)
     ap.add_argument("--spread", type=float, default=0.95)
     ap.add_argument("--sky-gain", type=float, default=1.7)
-    ap.add_argument("--oil-gain", type=float, default=4.2)
+    ap.add_argument("--oil-gain", type=float, default=5.0)
     ap.add_argument("--oil-sweep", type=float, default=0.55,
                     help="per-opening view-angle swing. above ~0.8 the film goes white at "
                          "the opening edges, which is the bug this replaced")
-    ap.add_argument("--film", default="220,780", help="thin-film thickness range, nm")
+    ap.add_argument("--film", default="200,1500",
+                    help="thin-film thickness range in nm. Wide on purpose: now that "
+                         "the PLATE drives thickness, the range decides how many "
+                         "interference orders the dither sweeps through, which is "
+                         "what turns the noise itself into the iridescence. "
+                         "220,780 is barely one order and reads flat brown; "
+                         "180,2400 is more colour again and more chroma noise")
     ap.add_argument("--stone", default="0.72,0.66,0.58", help="pillar colour")
     ap.add_argument("--color", default="0.38,0.52,0.85")
 
     # depth
-    ap.add_argument("--parallax", type=float, default=340.0,
-                    help="camera sway amplitude in canvas px")
-    ap.add_argument("--parallax-period", type=float, default=26.0, help="seconds")
-    ap.add_argument("--par-sky", type=float, default=-1.0,
-                    help="sky shift per unit camera. negative = behind the wall")
-    ap.add_argument("--par-in", type=float, default=-0.55, help="opening interiors")
-    ap.add_argument("--par-obj", type=float, default=0.85, help="objects in the room")
-    ap.add_argument("--reveal", type=float, default=0.13,
+    ap.add_argument("--parallax", type=float, default=220.0,
+                    help="camera sway amplitude in canvas px. Much smaller than it "
+                         "was, and none of it moves the plate any more: the depth "
+                         "now comes from the objects, the jamb reveals and the "
+                         "pillars' shading, all of which this wall owns outright")
+    ap.add_argument("--parallax-period", type=float, default=19.0, help="seconds")
+    ap.add_argument("--par-in", type=float, default=-0.45,
+                    help="tilt of the oil inside each opening. an ANGLE, not an "
+                         "offset - it never moves the plate sample")
+    ap.add_argument("--par-obj", type=float, default=1.20, help="objects in the room")
+    ap.add_argument("--reveal", type=float, default=0.11,
                     help="fake jamb depth, in local opening uv")
-    ap.add_argument("--pillar-shift", type=float, default=44.0,
-                    help="pillar silhouette travel in canvas px. keep it small")
-    ap.add_argument("--pillar-wobble", type=float, default=9.0)
+    ap.add_argument("--pillar-shift", type=float, default=9.0,
+                    help="pillar silhouette travel in canvas px. This moves real "
+                         "architecture, so it stays tiny; the pillars' shading "
+                         "carries the depth instead")
+    ap.add_argument("--pillar-wobble", type=float, default=3.0)
     ap.add_argument("--pillar-gain", type=float, default=0.85)
+    ap.add_argument("--pillar-z", type=float, default=1500.0,
+                    help="how near the pillars stand, in the same units as the "
+                         "objects (-900 out beyond the wall .. +1100 closest). "
+                         "objects nearer than this pass in FRONT of them")
 
     # chrome
     ap.add_argument("--gloss", type=float, default=90.0)
     ap.add_argument("--spec-gain", type=float, default=3.4)
-    ap.add_argument("--windows", type=float, default=2.4,
+    ap.add_argument("--env-warm", default="1.10,0.84,0.98",
+                    help="chrome reflection tint above the horizon")
+    ap.add_argument("--env-cool", default="0.70,0.96,1.12",
+                    help="chrome reflection tint below the horizon")
+    ap.add_argument("--windows", type=float, default=2.0,
                     help="brightness of the room openings reflected in the metal. "
                          "this is what stops a chrome sphere being a grey ball")
     ap.add_argument("--room-mix", type=float, default=0.20)
-    ap.add_argument("--exposure", type=float, default=0.95)
-    ap.add_argument("--view-fov", type=float, default=0.13,
+    ap.add_argument("--exposure", type=float, default=0.85)
+    ap.add_argument("--view-fov", type=float, default=0.55,
                     help="fake perspective on the chrome. 0 makes every flat face a "
                          "single flat colour, because the camera is orthographic")
     ap.add_argument("--horizon-hot", type=float, default=0.90,
@@ -528,30 +890,29 @@ def main():
     void main(){ vUv = aP*0.5+0.5; gl_Position = vec4(aP,0,1); }"""
 
     bg_prog = ctx.program(vertex_shader=quad_vs, fragment_shader=load_shader("sky_oil.frag"))
-    pil_prog = ctx.program(vertex_shader=quad_vs, fragment_shader=load_shader("pillars.frag"))
+    # The pillars are drawn into the OBJECTS' depth buffer, at a fixed depth, so
+    # the depth test decides per pixel which objects pass in front of them and
+    # which go behind. That needs a vertex shader that can place the quad in z;
+    # the shared one pins it at 0.
+    pillar_vs = """#version 330
+    in vec2 aP; out vec2 vUv; uniform float uQuadZ;
+    void main(){ vUv = aP*0.5+0.5; gl_Position = vec4(aP, uQuadZ, 1.0); }"""
+    pil_prog = ctx.program(vertex_shader=pillar_vs,
+                           fragment_shader=load_shader("pillars.frag"))
     obj_prog = ctx.program(vertex_shader=load_shader("chrome_object.vert"),
                            fragment_shader=load_shader("chrome_object.frag"))
     comp_prog = ctx.program(vertex_shader=quad_vs, fragment_shader="""#version 330
     in vec2 vUv; out vec4 fragColor;
-    uniform sampler2D uBg, uOutside, uInside, uPillars, uMasks, uAux;
+    uniform sampler2D uBg, uObjects, uMasks;
     void main(){
         vec3 col = texture(uBg, vUv).rgb;
 
-        // Objects beyond the wall are visible ONLY through an opening. This one
-        // multiply is what makes them read as arriving from outside rather than
-        // fading up on the wall surface.
-        vec4 out_ = texture(uOutside, vUv);
-        float slot = texture(uAux, vUv).a;
-        out_ *= slot;
-        col = col * (1.0 - out_.a) + out_.rgb;
-
-        // then loose in the room, in front of the wall
-        vec4 in_ = texture(uInside, vUv);
-        col = col * (1.0 - in_.a) + in_.rgb;
-
-        // and the pillars stand in front of all of it
-        vec4 pil = texture(uPillars, vUv);
-        col = col * (1.0 - pil.a) + pil.rgb;
+        // One layer for objects AND pillars: they were depth-sorted against
+        // each other when they were drawn, so there is nothing left to order
+        // here. The objects also clip themselves against the openings in their
+        // own shader, per fragment, so there is nothing to mask either.
+        vec4 ob = texture(uObjects, vUv);
+        col = col * (1.0 - ob.a) + ob.rgb;
 
         col *= texture(uMasks, vUv).a;        // projectable
         fragColor = vec4(col, 1.0);
@@ -593,9 +954,7 @@ def main():
         t.filter = (moderngl.LINEAR, moderngl.LINEAR)
         return ctx.framebuffer(color_attachments=[t]), t
     fbo_bg, tex_bg = rgba_fbo()
-    fbo_pil, tex_pil = rgba_fbo()
-    fbo_out, tex_out = rgba_fbo()
-    fbo_in, tex_in = rgba_fbo()
+    fbo_obj, tex_obj = rgba_fbo()
 
     # Chrome lives or dies on its silhouette, so the object pass is multisampled
     # and resolved down. Without this every curved edge staircases and the
@@ -617,10 +976,8 @@ def main():
         fbo_ms = None
     print("msaa      %s" % ("%dx" % samples if samples else "off"))
 
-    fbo_out_d = ctx.framebuffer(color_attachments=[tex_out], depth_attachment=ms_d) \
-        if not samples else None
-    fbo_in_d = ctx.framebuffer(color_attachments=[tex_in], depth_attachment=ms_d) \
-        if not samples else None
+    fbo_obj_d = (None if samples else
+                 ctx.framebuffer(color_attachments=[tex_obj], depth_attachment=ms_d))
     fbo_final = ctx.simple_framebuffer((W, H), components=3)
 
     # ---- geometry ---------------------------------------------------------
@@ -634,9 +991,12 @@ def main():
     doors = [o for o in openings if o["kind"] == "DOOR"]
     target = pick_target_door(doors)
     seg_lo = (seg["in"] - seg["handles"] - seg["in"]) / float(FPS)
-    seg_hi = (seg["out"] + seg["handles"] - seg["in"]) / float(FPS)
+    # the OUT point, not out-plus-handles: the last object has to be gone by
+    # 4:00 itself, so the handles carry clean plate at both ends
+    seg_hi = (seg["out"] - seg["in"]) / float(FPS)
     objs = [] if a.no_objects else build_objects(
-        openings, a.seed, a.objects, seg_lo, seg_hi, a.obj_scale, a.drift)
+        openings, a.seed, a.objects, seg_lo, seg_hi, a.obj_scale, a.drift, a.speed,
+        a.fit_margin)
     print("objects   %d  ->  door %d at x %d (%dx%d)"
           % (len(objs), target["index"], target["cx"], target["w"], target["h"]))
 
@@ -647,12 +1007,17 @@ def main():
     print("pillars   %d columns" % len(cols))
 
     # ---- the plate's own arc ----------------------------------------------
-    arc = {}
+    # Named plate_arc, not arc: object_state() returns a swell value that was
+    # also called arc, and unpacking it in this scope silently replaced this
+    # dict with a float. The frame it happened on rendered fine and the NEXT one
+    # died in arc.get(), which points nowhere near the actual mistake.
+    plate_arc = {}
     arc_path = os.path.join(REF_ROOT, "noise_arc.csv")
     if os.path.isfile(arc_path):
         with open(arc_path) as fh:
             for row in csv.DictReader(fh):
-                arc[int(row["frame"])] = (float(row["mean_norm"]), float(row["mean"]))
+                plate_arc[int(row["frame"])] = (float(row["mean_norm"]),
+                                                float(row["mean"]))
 
     # ---- noise stream -----------------------------------------------------
     v1 = source("SPSW1") if not a.hq else None
@@ -725,6 +1090,8 @@ def main():
 
     col = np.array([float(x) for x in a.color.split(",")], "f4")
     stone = np.array([float(x) for x in a.stone.split(",")], "f4")
+    env_warm = np.array([float(x) for x in a.env_warm.split(",")], "f4")
+    env_cool = np.array([float(x) for x in a.env_cool.split(",")], "f4")
     film = [float(x) for x in a.film.split(",")]
     nbytes = W * H * 3
     t_start = time.time()
@@ -758,8 +1125,15 @@ def main():
         # and the camera would restart at every chunk boundary and a chunked
         # final render would visibly jump.
         t = (frame - seg["in"]) / float(FPS)
-        mean_norm, _ = arc.get(frame, (0.5, 0.5))
+        mean_norm, plate_mean = plate_arc.get(frame, (0.5, 0.25))
         camx = camera_x(t, a.parallax, a.parallax_period)
+        # measured from the segment IN point, so the handles are untouched plate
+        intro = smooth(t, 0.0, max(a.intro, 1e-3))
+        # Nothing should still be flying this late - the entry times are
+        # constrained so everything lands first - but this guarantees it rather
+        # than trusting it, and costs one multiply.
+        seg_end = (seg["out"] - seg["in"]) / float(FPS)
+        outro = 1.0 - smoother(t, seg_end - max(a.outro, 1e-3), seg_end)
 
         # ---- background ---------------------------------------------------
         t_plate.use(0); t_mask.use(1); t_oid.use(2); t_aux.use(3)
@@ -771,11 +1145,12 @@ def main():
         setu(bg_prog, "uCamX", camx)
         setu(bg_prog, "uCamAmp", a.parallax)
         setu(bg_prog, "uSkyToOil", smooth(t, 2.0, 20.0))
-        setu(bg_prog, "uCloud", a.cloud)
-        setu(bg_prog, "uCloudSpeed", 0.15)
         setu(bg_prog, "uHorizon", a.horizon)
         setu(bg_prog, "uBands", a.bands)
         setu(bg_prog, "uPlateMix", a.plate_mix)
+        setu(bg_prog, "uPlateDrive", a.plate_drive)
+        setu(bg_prog, "uPlateMean", plate_mean)
+        setu(bg_prog, "uPlateContrast", a.plate_contrast)
         setu(bg_prog, "uSpread", a.spread)
         setu(bg_prog, "uSkyGain", a.sky_gain)
         setu(bg_prog, "uOilGain", a.oil_gain)
@@ -791,75 +1166,141 @@ def main():
         setu(bg_prog, "uOilSweep", a.oil_sweep)
         setu(bg_prog, "uFilmMin", film[0])
         setu(bg_prog, "uFilmMax", film[1])
-        setu(bg_prog, "uParSky", a.par_sky)
         setu(bg_prog, "uParIn", a.par_in)
+        setu(bg_prog, "uIntro", intro)
         fbo_bg.use(); ctx.disable(moderngl.DEPTH_TEST | moderngl.BLEND)
         fbo_bg.clear(0, 0, 0, 1); bg_vao.render()
 
-        # ---- objects: outside the wall, then inside the room ---------------
-        targets = ((fbo_out, tex_out, True), (fbo_in, tex_in, False))
-        for fbo_resolve, _tex, want_outside in targets:
-            draw = fbo_ms if samples else (fbo_out_d if want_outside else fbo_in_d)
-            draw.use()
-            draw.clear(0.0, 0.0, 0.0, 0.0)
-            if objs:
-                ctx.enable(moderngl.DEPTH_TEST)
-                ctx.enable(moderngl.BLEND)
-                ctx.blend_func = (moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
-                t_plate.use(0)
-                setu(obj_prog, "uPlate", 0)
-                setu(obj_prog, "uRes", (float(W), float(H)))
-                setu(obj_prog, "uTime", t)
-                setu(obj_prog, "uBands", a.bands)
-                setu(obj_prog, "uCloud", a.cloud)
-                setu(obj_prog, "uCloudSpeed", 0.15)
-                setu(obj_prog, "uColor", tuple(col))
-                setu(obj_prog, "uSkyGain", a.sky_gain)
-                setu(obj_prog, "uGloss", a.gloss)
-                setu(obj_prog, "uSpecGain", a.spec_gain)
-                setu(obj_prog, "uRoomMix", a.room_mix * (0.35 + 0.9 * mean_norm))
-                setu(obj_prog, "uExposure", a.exposure)
-                setu(obj_prog, "uViewFov", a.view_fov)
-                setu(obj_prog, "uHorizonHot", a.horizon_hot)
-                setu(obj_prog, "uWindows", a.windows)
-                setu(obj_prog, "uLightDir", (0.35, -0.8, 0.5))
-                setu(obj_prog, "uLightCol", (1.0, 0.97, 0.92))
-                for o in objs:
-                    st = object_state(o, t)
-                    if st is None:
-                        continue
-                    pos, scale, alpha, w_out, depth = st
-                    w = w_out if want_outside else (1.0 - w_out)
-                    aa = alpha * w
-                    if aa <= 0.004:
-                        continue
-                    pos = pos.copy()
-                    # objects sit in the room, so they move WITH the camera,
-                    # opposite to the sky behind them
-                    pos[0] = (pos[0] + camx * a.par_obj * depth) / a.div
-                    pos[1] /= a.div
-                    sc = scale / a.div
-                    rw, rp = o["rot_w"], o["rot_p"]
-                    rot = (o["spin"][0] * t + 0.55 * math.sin(rw[0] * t + rp[0]),
-                           o["spin"][1] * t + 0.65 * math.sin(rw[1] * t + rp[1]),
-                           o["spin"][2] * t + 0.40 * math.sin(rw[2] * t + rp[2]))
-                    m = model_matrix(pos, sc, rot)
-                    setu(obj_prog, "uMVP", tuple((proj @ m).T.flatten()))
-                    setu(obj_prog, "uModel", tuple(m.T.flatten()))
-                    setu(obj_prog, "uNormalMat", tuple(normal_matrix(m).T.flatten()))
-                    setu(obj_prog, "uTint", tuple(o["tint"]))
-                    setu(obj_prog, "uAlpha", float(aa))
-                    vaos[o["shape"]].render()
-            if samples:
-                ctx.copy_framebuffer(fbo_resolve, fbo_ms)     # MSAA resolve
+        # ---- objects -------------------------------------------------------
+        # ONE pass. Each fragment decides for itself whether it is out beyond
+        # the wall (and so visible only through an opening) or inside the room.
+        # The old two-pass crossfade drew the object twice at partial alpha and
+        # dissolved between the clipped and unclipped copies, so the part of it
+        # outside the opening ghosted into existence instead of the object
+        # coming through the hole.
+        live = []
+        for o in objs:
+            st = object_state(o, t)
+            if st is None:
+                continue
+            pos, wall_z, scale, alpha, swell, clear = st
+            if alpha <= 0.004:
+                continue
+            live.append(dict(o=o, pos=pos, wall_z=wall_z, scale=scale,
+                             alpha=alpha, swell=swell, clear=clear))
+        if a.separation > 0:
+            resolve_overlaps(live, a.separation)
 
-        # ---- pillars ------------------------------------------------------
-        ctx.disable(moderngl.DEPTH_TEST | moderngl.BLEND)
-        fbo_pil.use(); fbo_pil.clear(0.0, 0.0, 0.0, 0.0)
+        draw = fbo_ms if samples else fbo_obj_d
+        draw.use()
+        draw.clear(0.0, 0.0, 0.0, 0.0)
+        if live:
+            ctx.enable(moderngl.DEPTH_TEST)
+            ctx.enable(moderngl.BLEND)
+            ctx.blend_func = (moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
+            t_plate.use(0); t_aux.use(1); tex_bg.use(2)
+            setu(obj_prog, "uPlate", 0)
+            setu(obj_prog, "uAux", 1)
+            setu(obj_prog, "uBg", 2)
+            setu(obj_prog, "uEmerge", a.emerge)
+            setu(obj_prog, "uFog", a.fog)
+            # A FLAT ambient level, not the plate sampled per pixel. Reading the
+            # plate at the fragment's screen position printed the wall's own
+            # pattern onto the metal, which is exactly what "the objects look
+            # transparent" was - the wall appearing to show through them.
+            setu(obj_prog, "uAmbient", tuple(col * (0.20 + 1.30 * plate_mean)))
+            setu(obj_prog, "uRes", (float(W), float(H)))
+            setu(obj_prog, "uTime", t)
+            setu(obj_prog, "uBands", a.bands)
+            setu(obj_prog, "uCloud", a.cloud)
+            setu(obj_prog, "uCloudSpeed", 0.15)
+            setu(obj_prog, "uColor", tuple(col))
+            setu(obj_prog, "uSkyGain", a.sky_gain)
+            setu(obj_prog, "uGloss", a.gloss)
+            setu(obj_prog, "uSpecGain", a.spec_gain)
+            setu(obj_prog, "uRoomMix", a.room_mix * (0.35 + 0.9 * mean_norm))
+            setu(obj_prog, "uExposure", a.exposure)
+            setu(obj_prog, "uViewFov", a.view_fov)
+            setu(obj_prog, "uHorizonHot", a.horizon_hot)
+            setu(obj_prog, "uWindows", a.windows)
+            setu(obj_prog, "uEnvWarm", tuple(env_warm))
+            setu(obj_prog, "uEnvCool", tuple(env_cool))
+            setu(obj_prog, "uWallFade", a.wall_fade / float(a.div))
+            setu(obj_prog, "uLightDir", (0.35, -0.8, 0.5))
+            setu(obj_prog, "uLightCol", (1.0, 0.97, 0.92))
+            def draw_objects(group):
+              for L in group:
+                o = L["o"]
+                pos, scale, alpha, swell = L["pos"], L["scale"], L["alpha"], L["swell"]
+                pos = pos.copy()
+                # objects sit in the room, so they move WITH the camera,
+                # opposite to the sky behind them. Enveloped by `clear` too: an
+                # object sitting in a window must not be slid out of it by the
+                # camera either.
+                pos[0] = (pos[0] + camx * a.par_obj * swell * L["clear"]) / a.div
+                pos[1] /= a.div
+                # The solver is free to slide objects in z to keep them apart.
+                # Subtracting that offset back out in the shader leaves the wall
+                # test reading the object's TRUE distance from the wall, so
+                # de-intersecting can never shove something through it.
+                z_bias = float(pos[2]) - L["wall_z"]
+                pos[2] = pos[2] / float(a.div)
+                sc = scale / a.div
+                rw, rp = o["rot_w"], o["rot_p"]
+                rot = (o["spin"][0] * t + 0.55 * math.sin(rw[0] * t + rp[0]),
+                       o["spin"][1] * t + 0.65 * math.sin(rw[1] * t + rp[1]),
+                       o["spin"][2] * t + 0.40 * math.sin(rw[2] * t + rp[2]))
+                m = model_matrix(pos, sc, rot)
+                setu(obj_prog, "uMVP", tuple((proj @ m).T.flatten()))
+                setu(obj_prog, "uModel", tuple(m.T.flatten()))
+                setu(obj_prog, "uNormalMat", tuple(normal_matrix(m).T.flatten()))
+                setu(obj_prog, "uTint", tuple(o["tint"]))
+                setu(obj_prog, "uAlpha", float(alpha * intro * outro))
+                setu(obj_prog, "uZBias", z_bias / float(a.div))
+                vaos[o["shape"]].render()
+
+            # ---- in front of the pillars, or behind them. NEVER BOTH -------
+            # An object spans a range of depths and the pillar is a plane at a
+            # single depth, so a per-fragment depth test genuinely slices the
+            # object in half when its centre sits near that plane - correct
+            # geometry, but it reads as the pillar cutting through it.
+            #
+            # The side is decided ONCE per object, from its near point, and
+            # holds for its whole flight. Deciding it per frame from the
+            # object's current depth would be just as correct and would pop the
+            # moment it crossed the plane, which is worse. Since depth follows
+            # size, this is still "the big ones come past in front".
+            behind = [L for L in live if L["o"]["z_near"] <= a.pillar_z]
+            front = [L for L in live if L["o"]["z_near"] > a.pillar_z]
+            draw_objects(behind)
+        # ---- pillars, in the SAME depth buffer as the objects -------------
+        # Not a layer pasted over the top: a real occluder at a real depth. An
+        # object nearer than uQuadZ fails the pillar's depth test and shows in
+        # front of it; one further away is covered. Since an object's depth
+        # swings from behind the wall to close to the viewer and back, the same
+        # object passes behind a pillar on the way in and in front of it at its
+        # nearest point.
         if not a.no_pillars:
+            # No depth test: everything drawn before this point is the "behind"
+            # group, so the pillar simply covers it, and the "front" group is
+            # drawn afterwards and covers the pillar. Sorting by draw order
+            # instead of by depth is what keeps any single object wholly on one
+            # side of the pillar.
+            ctx.disable(moderngl.DEPTH_TEST)
+            ctx.enable(moderngl.BLEND)
+            ctx.blend_func = (moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
+            ctx.depth_mask = False
             t_aux.use(0); t_plate.use(1); t_mask.use(2)
             for nm, val in (("uAux", 0), ("uPlate", 1), ("uMasks", 2)):
                 setu(pil_prog, nm, val)
+            # /a.div, and that divisor is the whole bug this line used to have.
+            # Everything on the object side is converted to render-pixel units -
+            # pos[2], uZBias, uWallFade all get divided - so the pillar's depth
+            # has to be divided too or the two are being compared in different
+            # units. At --div 2 a pillar asked for at 1500 was competing as if it
+            # were at 3000, which is in front of very nearly everything. It would
+            # have come out right at --div 1 and wrong in every single preview.
+            setu(pil_prog, "uQuadZ", -(a.pillar_z / float(a.div)) / 4000.0)
             setu(pil_prog, "uRes", (float(W), float(H)))
             setu(pil_prog, "uTime", t)
             setu(pil_prog, "uArc", mean_norm)
@@ -874,6 +1315,7 @@ def main():
             setu(pil_prog, "uStone", tuple(stone))
             setu(pil_prog, "uSkyGain", a.sky_gain)
             setu(pil_prog, "uGain", a.pillar_gain)
+            setu(pil_prog, "uIntro", intro)
             setu(pil_prog, "uLevels", a.levels)
             setu(pil_prog, "uGrid", a.dither_grid)
             setu(pil_prog, "uCol0", (float(col0["x"]), float(col0["y"]),
@@ -882,13 +1324,25 @@ def main():
                                      float(col1["w"]), float(col1["h"])))
             setu(pil_prog, "uCanvasW", float(CW))
             pil_vao.render()
+            ctx.depth_mask = True
+
+        # ---- and the objects that belong in front of the pillars ----------
+        # Depth testing is back on, so these still sort correctly against each
+        # other AND against the behind group, and each one still self-occludes.
+        # Only their relationship to the pillar is decided by draw order.
+        if live and front:
+            ctx.enable(moderngl.DEPTH_TEST)
+            ctx.enable(moderngl.BLEND)
+            ctx.blend_func = (moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
+            draw_objects(front)
+
+        if samples:
+            ctx.copy_framebuffer(fbo_obj, fbo_ms)     # MSAA resolve
 
         # ---- composite ----------------------------------------------------
         ctx.disable(moderngl.DEPTH_TEST | moderngl.BLEND)
-        tex_bg.use(0); tex_out.use(1); tex_in.use(2); tex_pil.use(3)
-        t_mask.use(4); t_aux.use(5)
-        for nm, val in (("uBg", 0), ("uOutside", 1), ("uInside", 2),
-                        ("uPillars", 3), ("uMasks", 4), ("uAux", 5)):
+        tex_bg.use(0); tex_obj.use(1); t_mask.use(2)
+        for nm, val in (("uBg", 0), ("uObjects", 1), ("uMasks", 2)):
             setu(comp_prog, nm, val)
         fbo_final.use(); fbo_final.clear(0, 0, 0, 1); comp_vao.render()
 

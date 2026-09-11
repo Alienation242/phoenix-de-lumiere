@@ -29,6 +29,14 @@ out vec4 fragColor;
 
 uniform vec2  uRes;
 uniform sampler2D uPlate;    // the room itself, as ambient light on the metal
+uniform sampler2D uAux;      // .a = every opening in the wall
+uniform sampler2D uBg;       // the wall as already rendered THIS frame, so an
+                             // object inside an opening can read the oil it is
+                             // sitting in and take its colour
+uniform float uEmerge;       // how completely the oil claims the metal out there
+uniform float uFog;          // how hard the outside air knocks it back
+uniform float uZBias;        // the separation solver's z nudge, removed again here
+uniform float uWallFade;     // softness of the wall plane, in pixels
 
 uniform float uTime;
 uniform float uBands;
@@ -40,7 +48,8 @@ uniform float uSkyGain;
 uniform vec3  uTint;         // metal colour. near-white = chrome
 uniform float uGloss;        // specular exponent. high = a tight, hard highlight
 uniform float uSpecGain;
-uniform float uRoomMix;      // how much of the wall's brightness the metal picks up
+uniform float uRoomMix;      // how much of the room's light the metal picks up
+uniform vec3  uAmbient;      // a FLAT level, not the wall sampled per pixel
 uniform vec3  uLightDir;
 uniform vec3  uLightCol;
 uniform float uAlpha;
@@ -48,6 +57,8 @@ uniform float uExposure;
 uniform float uViewFov;      // fake perspective divergence, see note 1 above
 uniform float uHorizonHot;   // brightness of the reflected horizon line
 uniform float uWindows;      // brightness of the room openings, reflected
+uniform vec3  uEnvWarm;      // tint above the reflected horizon
+uniform vec3  uEnvCool;      // tint below it
 
 // Filmic curve. Chrome generates values far above 1.0, and a hard clamp turns
 // every highlight into a flat white blob with a visible edge - the clearest
@@ -64,8 +75,12 @@ vec3 envChrome(vec3 d, float soft) {
     // the ground goes almost to black; the filmic curve pulls the top back down
     // afterwards. Compress this and the metal turns into a pearl - lots of
     // light, no contrast, no reflection to read.
-    vec3 sky = skyEnv(d, uTime, uBands, uCloud, uCloudSpeed, uColor, uSkyGain, soft) * 2.3;
-    vec3 ground = uColor * 0.020 + vec3(0.004, 0.005, 0.007);
+    // Split tint across the horizon - warm above, cool below. A single-hue
+    // environment gives chrome a single-hue reflection; the split is what makes
+    // a mirrored surface read as being somewhere rather than nowhere.
+    vec3 sky = skyEnv(d, uTime, uBands, uCloud, uCloudSpeed, uColor, uSkyGain, soft)
+               * 2.3 * uEnvWarm;
+    vec3 ground = (uColor * 0.020 + vec3(0.004, 0.005, 0.007)) * uEnvCool;
 
     // extra high-frequency cloud, only in the reflection. The wall reads its
     // clouds at 1:1 but a mirror magnifies them, and 5 octaves show their
@@ -82,17 +97,21 @@ vec3 envChrome(vec3 d, float soft) {
     // the environment for the curvature to bend. Real chrome renders are sold
     // by hard-edged bright shapes - studio strip lights, or in this case the
     // venue's own rhythm of tall openings, wrapped around the horizon.
+    // 26 openings rather than 18, and narrower. A sphere sweeps the whole ring
+    // whatever you do, but a flat cube face samples a narrow cone of directions
+    // - land it inside one wide bar and the entire face is a single flat white,
+    // which is precisely what stops a cube reading as chrome.
     float az = atan(d.z, d.x);
-    float cell = abs(fract(az * (9.0 / PI)) - 0.5) * 2.0;
-    float bar = smoothstep(0.70, 0.34, cell);
+    float cell = abs(fract(az * (13.0 / PI)) - 0.5) * 2.0;
+    float bar = smoothstep(0.74, 0.30, cell);
 
     float above = smoothstep(-0.02, 0.10, d.y) * smoothstep(0.66, 0.30, d.y);
-    e += vec3(1.0, 0.985, 0.95) * bar * above * uWindows;
+    e += mix(uEnvWarm, vec3(1.0), 0.45) * bar * above * uWindows;
 
     // and the same openings again in the floor, which is what a polished floor
     // does and what gives the lower hemisphere something to show
     float below = smoothstep(-0.62, -0.36, d.y) * (1.0 - smoothstep(-0.22, -0.05, d.y));
-    e += vec3(0.80, 0.85, 1.0) * bar * below * uWindows * 0.40;
+    e += mix(uEnvCool, vec3(1.0), 0.35) * bar * below * uWindows * 0.40;
 
     // the hot line at the horizon, the single strongest "this is metal" cue
     e += vec3(1.0, 0.98, 0.94) * exp(-abs(d.y) * 34.0) * uHorizonHot;
@@ -108,6 +127,12 @@ vec3 envChrome(vec3 d, float soft) {
 
 void main() {
     vec3 N = normalize(vNrm);
+
+    // The Moebius band is an open surface with no thickness, so half of it is
+    // seen from behind. Without this its back faces reflect the floor while
+    // the front faces beside them reflect the sky, and the band tears in two
+    // along a line that has nothing to do with its shape.
+    if (!gl_FrontFacing) N = -N;
 
     // fake just enough perspective that flat faces stop being flat colour
     vec2 ndc = (gl_FragCoord.xy / uRes) * 2.0 - 1.0;
@@ -127,9 +152,12 @@ void main() {
 
     vec3 col = env * F;
 
-    // the room it is actually flying through
-    vec3 room = texture(uPlate, gl_FragCoord.xy / uRes).rgb;
-    col += room * uRoomMix * F;
+    // The room it is actually flying through - as a flat ambient level taken
+    // from this frame's mean, NOT the plate sampled at the fragment's screen
+    // position. Sampling it per pixel stamps the wall's own dither straight onto
+    // the metal, and a mirror wearing the pattern of the wall behind it reads as
+    // transparent, not reflective.
+    col += uAmbient * uRoomMix * F;
 
     // one hard key light - the highlight that sells "polished"
     vec3 L = normalize(uLightDir);
@@ -142,5 +170,38 @@ void main() {
     col += uColor * rim * 0.35;
 
     col = tonemap(col);
-    fragColor = vec4(col * uAlpha, uAlpha);   // premultiplied
+
+    // ---- the wall, per fragment ----------------------------------------
+    // vWorld.z is this fragment's own depth, so a shape halfway through a
+    // doorway is genuinely half clipped: the half still outside is visible
+    // only where the opening is, the half already inside is not clipped at
+    // all. Doing this per object instead - crossfading a clipped copy against
+    // an unclipped one - makes the outside part ghost into existence on the
+    // wall surface rather than the object coming through the hole.
+    //
+    // uZBias is subtracted so the test reads the object's true distance from
+    // the wall rather than wherever the separation solver parked it in z.
+    float wz = vWorld.z - uZBias;
+    float behind = 1.0 - smoothstep(-uWallFade, uWallFade, wz);
+    vec2 scr = gl_FragCoord.xy / uRes;
+    float slot = texture(uAux, scr).a;
+
+    float a = uAlpha * mix(1.0, slot, behind);
+
+    // ---- emerging from the oil ------------------------------------------
+    // Out beyond the wall it is seen through the opening, which means seen
+    // through the oil - so it takes the oil's colour, loses its own, and loses
+    // most of its contrast. Reading the background that was rendered a moment
+    // ago means it picks up the exact film colour of the window it is in,
+    // rather than some approximation of it, and resolves into chrome as it
+    // comes through.
+    vec3 oil = texture(uBg, scr).rgb;
+    float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    vec3 submerged = mix(vec3(lum), oil * 2.2 + vec3(0.03), 0.68);
+    col = mix(col, submerged, behind * uEmerge);
+
+    // and the outside air knocks it back
+    col *= mix(1.0, uFog, behind);
+
+    fragColor = vec4(col * a, a);   // premultiplied
 }
