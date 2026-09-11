@@ -431,7 +431,12 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
         # opposite of a clean hand-off to the next wall.
         u = (i + float(rng.uniform(0.12, 0.88))) / float(max(count, 1))
         u = u ** 0.85
-        start_lo = t_lo - dur * 0.6
+        # start_lo was t_lo - dur*0.6, which let the first object be well into
+        # its flight at the very first frame - so it did not come through a
+        # window, it simply materialised in mid-air. Nothing may begin before
+        # the segment does; every object now starts at p = 0, which is tiny and
+        # out beyond its own window.
+        start_lo = max(t_lo, 0.0)
         start_hi = t_hi - dur
         t0 = start_lo + u * max(start_hi - start_lo, 0.0)
 
@@ -749,14 +754,16 @@ def main():
     ap.add_argument("--fit-margin", type=float, default=0.78,
                     help="how much of an opening an object may fill as it passes "
                          "through. 1.0 touches the frame exactly; leave headroom")
-    ap.add_argument("--intro", type=float, default=2.0,
-                    help="seconds to blend from the bare shared plate into the full "
-                         "treatment, measured from the segment IN point (not from "
-                         "the render start, so handles show untouched noise and a "
-                         "chunked render cannot repeat the intro)")
-    ap.add_argument("--outro", type=float, default=1.2,
-                    help="seconds before the segment OUT point over which any "
-                         "remaining object is faded out, so 4:00 hands over clean")
+    ap.add_argument("--intro", type=float, default=10.0,
+                    help="seconds to grow out of the bare shared plate, measured from "
+                         "the segment IN point (not the render start, so handles show "
+                         "untouched noise and a chunked render cannot repeat it). "
+                         "With the segment starting at 1:50 this is the whole "
+                         "1:50-2:00 approach")
+    ap.add_argument("--outro", type=float, default=10.0,
+                    help="seconds before the segment OUT point over which the whole "
+                         "wall dissolves back into the bare shared plate. Objects are "
+                         "required to have landed before it starts")
     ap.add_argument("--emerge", type=float, default=0.85,
                     help="how completely the oil claims an object that is still "
                          "out beyond the wall")
@@ -991,9 +998,9 @@ def main():
     doors = [o for o in openings if o["kind"] == "DOOR"]
     target = pick_target_door(doors)
     seg_lo = (seg["in"] - seg["handles"] - seg["in"]) / float(FPS)
-    # the OUT point, not out-plus-handles: the last object has to be gone by
-    # 4:00 itself, so the handles carry clean plate at both ends
-    seg_hi = (seg["out"] - seg["in"]) / float(FPS)
+    # Everything must have LANDED before the dissolve begins, so the last ten
+    # seconds are nothing but the wall sinking back into the shared plate.
+    seg_hi = (seg["out"] - seg["in"]) / float(FPS) - a.outro
     objs = [] if a.no_objects else build_objects(
         openings, a.seed, a.objects, seg_lo, seg_hi, a.obj_scale, a.drift, a.speed,
         a.fit_margin)
@@ -1128,12 +1135,21 @@ def main():
         mean_norm, plate_mean = plate_arc.get(frame, (0.5, 0.25))
         camx = camera_x(t, a.parallax, a.parallax_period)
         # measured from the segment IN point, so the handles are untouched plate
-        intro = smooth(t, 0.0, max(a.intro, 1e-3))
-        # Nothing should still be flying this late - the entry times are
-        # constrained so everything lands first - but this guarantees it rather
-        # than trusting it, and costs one multiply.
+        # THE HAND-OFF, both ends. The ten seconds either side of the delivered
+        # 2:00-4:00 are not padding - they are the transition. The wall grows
+        # out of the untouched shared plate over 1:50-2:00 and dissolves back
+        # into it over 4:00-4:10, so this surface starts and finishes on exactly
+        # the image the other eleven are showing, and whatever the piece does
+        # next - the black - happens from a clean common frame.
         seg_end = (seg["out"] - seg["in"]) / float(FPS)
-        outro = 1.0 - smoother(t, seg_end - max(a.outro, 1e-3), seg_end)
+        scene = (smoother(t, 0.0, max(a.intro, 1e-3))
+                 * (1.0 - smoother(t, seg_end - max(a.outro, 1e-3), seg_end)))
+
+        # The camera settles with it. Handing over on the shared plate while the
+        # viewpoint is still swung 200 px off centre would put this wall's idea
+        # of straight-ahead out of step with the other eleven at the one moment
+        # they all have to agree. It starts centred and ends centred.
+        camx *= scene
 
         # ---- background ---------------------------------------------------
         t_plate.use(0); t_mask.use(1); t_oid.use(2); t_aux.use(3)
@@ -1167,7 +1183,7 @@ def main():
         setu(bg_prog, "uFilmMin", film[0])
         setu(bg_prog, "uFilmMax", film[1])
         setu(bg_prog, "uParIn", a.par_in)
-        setu(bg_prog, "uIntro", intro)
+        setu(bg_prog, "uIntro", scene)
         fbo_bg.use(); ctx.disable(moderngl.DEPTH_TEST | moderngl.BLEND)
         fbo_bg.clear(0, 0, 0, 1); bg_vao.render()
 
@@ -1255,7 +1271,7 @@ def main():
                 setu(obj_prog, "uModel", tuple(m.T.flatten()))
                 setu(obj_prog, "uNormalMat", tuple(normal_matrix(m).T.flatten()))
                 setu(obj_prog, "uTint", tuple(o["tint"]))
-                setu(obj_prog, "uAlpha", float(alpha * intro * outro))
+                setu(obj_prog, "uAlpha", float(alpha * scene))
                 setu(obj_prog, "uZBias", z_bias / float(a.div))
                 vaos[o["shape"]].render()
 
@@ -1315,7 +1331,7 @@ def main():
             setu(pil_prog, "uStone", tuple(stone))
             setu(pil_prog, "uSkyGain", a.sky_gain)
             setu(pil_prog, "uGain", a.pillar_gain)
-            setu(pil_prog, "uIntro", intro)
+            setu(pil_prog, "uIntro", scene)
             setu(pil_prog, "uLevels", a.levels)
             setu(pil_prog, "uGrid", a.dither_grid)
             setu(pil_prog, "uCol0", (float(col0["x"]), float(col0["y"]),
