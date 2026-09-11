@@ -18,7 +18,8 @@ hour 7.** Rough is fine. A finished 20 seconds is worth less than a rough 80.
 - [ ] `check_environment.ps1`
 - [ ] External NVMe plugged in, output roots pointed at it.
 - [ ] Full ffmpeg installed (gyan.dev / BtbN) → `$env:PXDL_FFMPEG`. Without it
-      you have no ProRes and your previews are ~7× larger than they need to be.
+      you have no ProRes, and previews fall back to mpeg4 — the 80-second
+      preview is 49 MB that way.
 - [ ] Put the ProRes master paths into `project.json` → `source_hq`.
 - [ ] Render 30 s and watch it:
       `python render_shader.py --div 4 --start 5700 --count 900 --mp4 --preview-width 1224`

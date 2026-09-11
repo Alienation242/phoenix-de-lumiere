@@ -10,6 +10,7 @@ docs/03_48H_PLAN.md          ← START HERE. hour-by-hour, and what to cut
 docs/00_TECHNICAL_SPEC.md    what the files actually are
 docs/01_PIPELINE.md          how to build and render it
 docs/02_PORTABLE_RENDER.md   moving to another machine / render node
+docs/04_DECISIONS.md         why things are the way they are
 
 project.json                 every constant. the scripts read it, so edit it here
 masks/                       31 cleaned region mattes, full canvas + per-plate
