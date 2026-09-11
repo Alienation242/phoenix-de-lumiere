@@ -1,0 +1,18 @@
+# source plates - far too large for git (800 MB each)
+RawNoise/*.mp4
+RawNoise/*.mov
+RawNoise/*.mxf
+
+# generated output
+work/
+render/
+deliver/
+_pipeline/bin/
+
+# python
+__pycache__/
+*.pyc
+
+# os
+Thumbs.db
+desktop.ini

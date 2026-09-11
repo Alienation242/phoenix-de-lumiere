@@ -1,0 +1,81 @@
+{
+  "project": "PhoenixDeLumiere_SW",
+  "surface": "SW",
+  "venue_note": "One of 12 mapped surfaces (CubeEXT CubeINT EW Floor InfinityEXT InfinityFloor InfinityINT NW SelfieRoom SmallMuseum SW WW). Hall floor measures 62.45 x 38.31 m in TOOLKIT_3D_PxDL_MAINEXPO_v4.c4d.",
+  "canvas": {
+    "w": 9788,
+    "h": 2552
+  },
+  "plates": [
+    {
+      "name": "SPSW1",
+      "x": 0,
+      "w": 7200,
+      "h": 2552
+    },
+    {
+      "name": "SPSW2",
+      "x": 6200,
+      "w": 3588,
+      "h": 2552
+    }
+  ],
+  "overlap": {
+    "x0": 6200,
+    "x1": 7200,
+    "w": 1000
+  },
+  "stitch_cut_x": 6700,
+  "fps": 30,
+  "loop_frames": 18000,
+  "segment": {
+    "in": 4800,
+    "out": 7199,
+    "handles": 30,
+    "note": "2:40.000 - 4:00.000. handles are frames either side; render in..out inclusive plus handles."
+  },
+  "scales": {
+    "full": {
+      "div": 1,
+      "w": 9788,
+      "h": 2552
+    },
+    "half": {
+      "div": 2,
+      "w": 4894,
+      "h": 1276
+    },
+    "quarter": {
+      "div": 4,
+      "w": 2447,
+      "h": 638
+    },
+    "note": "gcd(9788,2552)=4, so 1, 2 and 4 are the ONLY divisors that stay on whole pixels in both axes."
+  },
+  "source": {
+    "SPSW1": "RawNoise/PxDL_SW_SPSW1.mp4",
+    "SPSW2": "RawNoise/PxDL_SW_SPSW2.mp4",
+    "mask": "RawNoise/PxDL_SW_9788x2552 (0-00-00-00).png",
+    "venue": "RawNoise/3d room mask.png"
+  },
+  "source_hq": {
+    "_note": "Paths to the ProRes masters of the noise. Absolute paths are fine (put them on the external drive). Fill these in and pass -HQ to extract_segment.ps1; the FINAL render must use these, the mp4s are preview-grade (0.019 bits/pixel).",
+    "SPSW1": "",
+    "SPSW2": ""
+  },
+  "dirs": {
+    "masks": "_pipeline/masks",
+    "reference": "_pipeline/reference",
+    "shaders": "_pipeline/shaders",
+    "work": "work",
+    "render": "render",
+    "deliver": "deliver"
+  },
+  "env_overrides": {
+    "PXDL_ROOT": "override the project root",
+    "PXDL_FFMPEG": "full path to an ffmpeg.exe",
+    "PXDL_WORK_ROOT": "override work/    e.g. E:/PxDL/work",
+    "PXDL_RENDER_ROOT": "override render/  e.g. E:/PxDL/render",
+    "PXDL_DELIVER_ROOT": "override deliver/ e.g. E:/PxDL/deliver"
+  }
+}
