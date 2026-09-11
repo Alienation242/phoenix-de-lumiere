@@ -59,9 +59,10 @@ if ($Stills.Count -gt 0) {
                   "[a]crop=${cut}:$($Cfg.canvas.h):0:0[l];" +
                   "[b]crop=${bW}:$($Cfg.canvas.h):${bOff}:0[r];" +
                   "[l][r]hstack=2[s];[s]scale=${pw}:${ph}:flags=area[o]"
-            Invoke-FFmpeg @('-hide_banner','-loglevel','error',
+            Invoke-FFmpeg (@('-hide_banner','-loglevel','error',
                 '-start_number',"$Start",'-i',$A,'-start_number',"$Start",'-i',$B,
-                '-filter_complex',$fc,'-map','[o]','-vsync','0','-frames:v','1','-y',$out) "still $f"
+                '-filter_complex',$fc,'-map','[o]') + (Get-FramePassthroughArgs) +
+                @('-frames:v','1','-y',$out)) "still $f"
         } else {
             $t = ([double]$f / $fps).ToString('0.000000', [Globalization.CultureInfo]::InvariantCulture)
             Invoke-FFmpeg @('-hide_banner','-loglevel','error','-ss',$t,'-i',$A,'-ss',$t,'-i',$B,

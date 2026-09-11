@@ -1,7 +1,7 @@
 # Phoenix de Lumière — SW wall — pipeline kit
 
 You own the `SW` surface: one of twelve mapped surfaces in a 62 × 38 m hall.
-Your segment is 2:40–4:00 of the ten-minute loop, delivered as two videos.
+Your segment is 2:00–4:00 of the ten-minute loop, delivered as two videos.
 
 Everything here was derived by measuring the supplied files.
 
@@ -21,10 +21,12 @@ reference/                   canvas_layout.png        geometry diagram for the p
                              noise_arc.csv            per-frame luma + motion
 scripts/     render_shader.py  ← renders the wall. no licence, any resolution
              + check, build, extract, slice, encode, verify, preview
-shaders/     sky_oil.glsl    your own PS1_SKY_FRAGMENT ported to TD: banded sky
-                             + thin-film oil, mixed by the window mask
-             psx_*.glsl      vertex snapping, affine UVs, dither
-             (none of these have been compiled — expect to fix a few lines)
+shaders/     lib_common.glsl  hash/noise/fbm/fresnel/thin-film + skyEnv(), shared
+                              by the wall and by the chrome. #include'd.
+             sky_oil.frag     banded sky, per-opening oil, fake jambs
+             chrome_object.*  polished metal, reflecting skyEnv()
+             pillars.frag     the two column bays, as the nearest layer
+             psx_*.glsl       the earlier PS1 treatment, kept as a fallback
 ```
 
 ---
@@ -79,8 +81,8 @@ When the master is rendered:
 ```powershell
 .\make_delivery.ps1 -MasterPattern "E:\PxDL\render\master\PxDL_SW_master.%05d.png"
 
-python verify_plates.py --a "E:\PxDL\deliver\PxDL_SW_SPSW1_4770-7229.mov" `
-                        --b "E:\PxDL\deliver\PxDL_SW_SPSW2_4770-7229.mov" --tol 2
+python verify_plates.py --a "E:\PxDL\deliver\PxDL_SW_SPSW1_3570-7229.mov" `
+                        --b "E:\PxDL\deliver\PxDL_SW_SPSW2_3570-7229.mov" --tol 2
 ```
 
 ---
@@ -95,7 +97,7 @@ python verify_plates.py --a "E:\PxDL\deliver\PxDL_SW_SPSW1_4770-7229.mov" `
 | `analyse_arc.py` | per-frame luma and motion → `noise_arc.csv`, and prints the cut list |
 | `master_to_plates.ps1` | master → lossless 16-bit plate sequences |
 | `make_delivery.ps1` | master → encoded plates in one pass (ProRes/DNxHR/FFV1/H.264/PNG16) |
-| `render_shader.py` | **renders the wall** — sky/oil + PS1 objects over the noise, any resolution, no licence |
+| `render_shader.py` | **renders the wall** — sky/oil + chrome objects + pillars over the noise, any resolution, no licence |
 | `render_test.ps1` | small preview video of anything you have rendered, frame numbers burnt in |
 | `verify_plates.py` | resolution, frame count, and that the overlap is identical. **Always run this.** |
 | `preview_stitch.ps1` | stitches the plates back to one canvas for review |
@@ -105,15 +107,35 @@ python verify_plates.py --a "E:\PxDL\deliver\PxDL_SW_SPSW1_4770-7229.mov" `
 
 ## The story, as it stands
 
-The noise becomes a **sky with clouds on the inside of the venue**; the
-**windows become oil fields**. Low-poly PS1 objects — spheres, cubes, pyramids —
-come **in through the windows**, travel across the wall, and **leave through the
-three doors**, fading and scaling down as they go. They screen-blend over the
-noise while travelling so they read clearly, then sink under it on the way out.
+The noise becomes a **sky with clouds on the inside of the venue**; every
+**opening becomes an oil field**. **Polished chrome objects** — spheres, tori,
+cubes, diamonds, pyramids — arrive **from outside, in through the windows**,
+cross the room, and **leave through the big middle door** (door 26, x 4696,
+757 × 754 — the largest of the three and the one nearest the canvas centre).
 
-`shaders/sky_oil.glsl` is your own sky shader doing exactly this: its
-`useLighting` cross-fade between banded sky and thin-film oil is now driven by
-the window mask rather than a uniform.
+The whole thing is layered for depth, and a slow left-right camera moves each
+layer by a different amount. On a flat wall, differential motion *is* depth:
+
+```
+sky + clouds        far behind the wall      moves against the camera
+oil in the openings just behind the surface
+fake jambs          inside every opening     the side you can see follows the camera
+chrome objects      in the room              move with the camera
+the two pillars     nearest the viewer       move most, and occlude the objects
+```
+
+Two details do most of the work:
+
+**Objects are clipped to the opening while they are outside it.** Beyond the
+wall they are drawn only where a window or the door is, so they genuinely read
+as coming in from outside and going back out, rather than fading up on the wall
+surface. The crossfade is driven by *distance to the opening*, not by progress
+along the path, so it fires when the object is actually in the doorway.
+
+**The chrome reflects the same sky the wall is showing.** `skyEnv()` in
+`shaders/lib_common.glsl` is shared between the background and the metal, so the
+objects mirror this venue's clouds, moving at this venue's speed. That shared
+world is what makes them sit in the room instead of on top of it.
 
 ## Still to ask the producer
 
@@ -121,7 +143,7 @@ the window mask rather than a uniform.
    wall dimensions and UV layout. Your 6 m estimate is too low; the doors put the
    canvas at ~10 m tall (spec §6).
 2. **Codec preference** — offer ProRes 4444 plus the 16-bit master on the drive.
-3. **Handles** — 4770–7229 (±1 s) is the current default. Drop them if time runs short.
+3. **Handles** — 3570–7229 (±1 s) is the current default. Drop them if time runs short.
 
 ## Working vs final quality
 

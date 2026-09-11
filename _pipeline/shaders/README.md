@@ -5,7 +5,10 @@ OpenGL 3.3 context — no TouchDesigner, no licence, any resolution.
 
 | file | what it is |
 |---|---|
-| `sky_oil.frag` | **the background.** Your own `PS1_SKY_FRAGMENT` from `shaderRefs/engine/shaders.ts` — hash / noise / fbm / fresnel / thinFilmReflectance verbatim, 12-step banded sky intact. The `useLighting` uniform that cross-faded sky ↔ oil is now driven per-pixel by the window mask: sky on the wall, oil in the windows. |
+| `lib_common.glsl` | **shared.** hash / noise / fbm / fresnel / thinFilmReflectance verbatim from your `PS1_SKY_FRAGMENT`, plus `skyEnv()` — one function for the world, called by the wall AND by the chrome, so the metal reflects the same sky the wall is showing. `#include`d; `render_shader.py` resolves that itself because core GL 3.3 has no include. |
+| `sky_oil.frag` | **the background.** 12-step banded sky intact; oil per opening; fake jambs whose lit side follows the camera. |
+| `chrome_object.vert/.frag` | **the objects.** Polished metal: no diffuse, fresnel-weighted environment, a dark ground under the sky with a hot horizon line, filmic tonemap. |
+| `pillars.frag` | **the two column bays**, as the nearest layer, cylinder-shaded with a highlight that slides as the camera moves. |
 | `psx_object.vert` | vertex snapping (`floor(pos * resolution) / resolution`, your own) + affine UVs |
 | `psx_object.frag` | flat colour, reduced colour depth, ordered dither |
 | `sky_oil.glsl`, `psx_vertex.glsl`, `psx_pixel.glsl`, `oil_clouds.glsl` | TouchDesigner-flavoured variants, kept in case you want to design inside TD's 1280 limit. **Not compiled** — expect to fix a few lines. |
@@ -18,9 +21,13 @@ edit → render 30 s → watch, about 30 seconds a pass:
 ```
 --sky-gain 1.7      base sky brightness (gaining the clouds too just clips them)
 --oil-gain 2.6      oil intensity before the tonemap
---spread 0.95       how much the view angle varies across the wall. Their
-                    original was a sky dome so cosTheta swung a lot; this puts
-                    that swing back and is what bands the oil in rainbows.
+--spread 0.95       how much the SKY's view angle varies across the wall
+--oil-sweep 0.55    the oil's view-angle swing, per opening. Above ~0.8 the film
+                    reaches grazing incidence at the opening edges, fresnel goes
+                    to 1 and the windows blow out white - which is exactly the
+                    bug this replaced, when the angle came from the pixel's
+                    position across the whole 9788 px wall instead.
+--film 220,780      thin-film thickness range in nm
 --cloud 0.55        coverage
 --plate-mix 0.55    how hard the plate's dither shades the sky
 --horizon 0.34      where the horizon sits on the wall

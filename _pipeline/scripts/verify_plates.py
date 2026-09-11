@@ -28,7 +28,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import CFG, ffmpeg, plate  # noqa: E402
+from _common import CFG, ffmpeg, frame_passthrough_args, plate  # noqa: E402
 
 A_NAME = CFG["plates"][0]["name"]
 B_NAME = CFG["plates"][1]["name"]
@@ -83,7 +83,7 @@ def read_frames(ff, src, w, h, idxs, start=None):
     args = [ff, "-hide_banner", "-loglevel", "error"]
     if start is not None and "%" in src:
         args += ["-start_number", str(start)]
-    args += ["-i", src, "-vf", "select='%s'" % sel, "-vsync", "0",
+    args += ["-i", src, "-vf", "select='%s'" % sel] + frame_passthrough_args() + [
              "-pix_fmt", "gray16le", "-f", "rawvideo", "pipe:1"]
     raw = subprocess.run(args, capture_output=True).stdout
     n = len(raw) // (w * h * 2)

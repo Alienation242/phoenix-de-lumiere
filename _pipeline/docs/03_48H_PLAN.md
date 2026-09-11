@@ -50,7 +50,7 @@ objects are events inside it.
 
 ### H6–7 · First full pass — non-negotiable
 ```powershell
-# render all 2460 frames at ÷4 out of TouchDesigner, then:
+# render all 3660 frames at ÷4, then:
 .\render_test.ps1 -In "E:\PxDL\render\test\out.%05d.png" -Width 1632 -Compare
 ```
 Watch it twice. Note where it sags. At ÷4 this render is minutes, not hours.
@@ -87,7 +87,9 @@ Another complete ÷4 render. Fix only what the pass exposes.
 
 ### H20–24 · Lock
 Stop adding. Check against the plate's own structure:
-- 2:40–3:10 near-black — stay dark, let the plate lead.
+- 2:00–3:10 near-black — seventy flat seconds at 0.10 mean. The plate will not
+  lead here; your own content has to. This is the biggest single change from
+  the old 2:40 in point.
 - 3:22–3:44 cuts land on **whole seconds**. Put your beats there.
 - 3:51–4:00 strobes hardest. Your climax.
 - You hand off bright and busy at 4:00.
@@ -95,7 +97,8 @@ Stop adding. Check against the plate's own structure:
 ### H24–30 · Full-resolution reality check
 - [ ] Render **10 frames** at 9788×2552: 4830, 5400, 6000, 6300, 6600, 6900,
       7050, 7100, 7150, 7199.
-- [ ] Time one frame. Multiply by 2460. **That number decides everything below.**
+- [ ] Time one frame. Multiply by 3660. **That number decides everything below.**
+      (Measured on the desktop: 2.35 s/frame, 14.3 MB/frame -> ~2.4 h, ~52 GB.)
 - [ ] Watch VRAM. If it will not fit, drop the shader pass to ÷2 and keep the
       composite at full — you will not see the difference on a wall.
 
@@ -106,14 +109,14 @@ python render_shader.py --div 1 --png --hq
 - [ ] `--hq` switches the noise to the **ProRes masters**, not the mp4.
 - [ ] Render to a **16-bit PNG sequence**, never straight to a movie. A sequence
       survives a crash; a movie does not.
-- [ ] Render in **four chunks** (4770–5399, 5400–6099, 6100–6799, 6800–7229).
+- [ ] Render in **four chunks** (3570–4499, 4500–5499, 5500–6399, 6400–7229).
       If one dies you re-run one chunk, not the night.
 - [ ] Check the folder count after each chunk.
 
 ### H40–44 · Deliver
 ```powershell
 .\make_delivery.ps1 -MasterPattern "E:\PxDL\render\master\PxDL_SW_master.%05d.png"
-python verify_plates.py --a "...SPSW1_4770-7229.mov" --b "...SPSW2_4770-7229.mov" --tol 2
+python verify_plates.py --a "...SPSW1_3570-7229.mov" --b "...SPSW2_3570-7229.mov" --tol 2
 .\render_test.ps1 -In "E:\PxDL\deliver" -Width 1632
 ```
 Watch the preview end to end one last time. Then send.
@@ -130,7 +133,7 @@ Cut in this order:
 1. **Object variety** — one shape, repeated, is a style. Three half-finished
    shapes is a mess.
 2. **The number of active windows** — six good ones beats twenty-seven weak.
-3. **Handles** — drop to ±0 and deliver 4800–7199 exactly. Tell the producer.
+3. **Handles** — drop to ±0 and deliver 3600–7199 exactly. Tell the producer.
 4. **Full resolution** — render at ÷2 (4894×1276) and upscale ×2 with
    nearest-neighbour on the way out. On a wall this size, with a PSX look and
    the plate's own dither on top, almost nobody will be able to tell. It halves
@@ -143,7 +146,7 @@ full pass before you deliver.
 
 ## Render-time arithmetic
 
-At 9788×2552 you are rendering 25 Mpx per frame, 2460 times.
+At 9788×2552 you are rendering 25 Mpx per frame, 3660 times.
 
 Measured: the background alone is **0.14 s per full frame** on the Intel iGPU,
 and at ÷4 the whole thing runs at **31 fps**. Expect the full-resolution pass to

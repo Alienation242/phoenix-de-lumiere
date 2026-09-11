@@ -69,6 +69,30 @@ def ffmpeg():
     )
 
 
+_PASSTHROUGH = None
+
+
+def frame_passthrough_args():
+    """The args that make ffmpeg emit exactly the frames `select` picked.
+
+    `-vsync 0` did this for years, was deprecated in 5.1 in favour of
+    `-fps_mode passthrough`, and was REMOVED in 9.0 - a build this new errors out
+    with "Unrecognized option 'vsync'" and decodes nothing. Probe the actual
+    binary once rather than guessing from its version string, which may be a
+    git hash. Keeps old render nodes working too.
+    """
+    global _PASSTHROUGH
+    if _PASSTHROUGH is None:
+        probe = subprocess.run(
+            [ffmpeg(), "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "color=c=black:s=16x16:d=0.1",
+             "-fps_mode", "passthrough", "-frames:v", "1", "-f", "null", "-"],
+            capture_output=True)
+        _PASSTHROUGH = (["-fps_mode", "passthrough"] if probe.returncode == 0
+                        else ["-vsync", "0"])
+    return list(_PASSTHROUGH)
+
+
 def plate(name):
     for p in CFG["plates"]:
         if p["name"] == name:

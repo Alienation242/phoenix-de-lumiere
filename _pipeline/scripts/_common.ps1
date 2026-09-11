@@ -75,6 +75,21 @@ function Test-FFmpegEncoder([string]$name) {
     return ($out -match "\s$([regex]::Escape($name))\s")
 }
 
+# `-vsync 0` made ffmpeg emit exactly the frames `select` picked. It was
+# deprecated in 5.1 for `-fps_mode passthrough` and REMOVED in 9.0, where it
+# fails with "Unrecognized option 'vsync'" and produces nothing. Probe the real
+# binary once - version strings can be git hashes - so old nodes keep working.
+$script:PassthroughArgs = $null
+function Get-FramePassthroughArgs {
+    if ($null -eq $script:PassthroughArgs) {
+        & $FFmpegExe -hide_banner -loglevel error -f lavfi -i color=c=black:s=16x16:d=0.1 `
+                     -fps_mode passthrough -frames:v 1 -f null - 2>&1 | Out-Null
+        $script:PassthroughArgs = if ($LASTEXITCODE -eq 0) { @('-fps_mode','passthrough') }
+                                  else { @('-vsync','0') }
+    }
+    return $script:PassthroughArgs
+}
+
 # ---- helpers ----------------------------------------------------------------
 function Get-Plate([string]$name) {
     $p = $Cfg.plates | Where-Object { $_.name -eq $name }

@@ -99,27 +99,34 @@ chain and it costs them nothing to hand over.
 ## 4. Your segment
 
 ```
-in   2:40.000  = 160.000 s = frame 4800
+in   2:00.000  = 120.000 s = frame 3600
 out  4:00.000  = 240.000 s = frame 7200
-length                80.000 s = 2400 frames (4800 .. 7199 inclusive)
+length               120.000 s = 3600 frames (3600 .. 7199 inclusive)
 ```
 
-Handles are flexible, so render **4770 .. 7229 (2460 frames, ±1 s)** and let the
+Handles are flexible, so render **3570 .. 7229 (3660 frames, ±1 s)** and let the
 producer trim. That is the default in `project.json`.
 
 ### Luminance arc (mean luma, 0–1, measured per frame)
 
 | time | mean | character |
 |---|---|---|
-| 2:40 – 3:10 | 0.07 → 0.15 | near-black, sparse dithered fragments, very low motion |
-| 3:10 – 3:32 | 0.25 → 0.69 | steady brightening, the image fills in |
-| 3:32 – 3:44 | 0.53 – 0.69 | peak brightness, high contrast |
-| 3:44 | — | hard transition, drops back to ~0.19 |
-| 3:52 – 4:00 | 0.30 – 0.77 | erratic, strobing, the hardest cuts of the segment |
+| 2:00 – 3:10 | 0.10 – 0.11 | **near-black for seventy seconds.** flat, not a ramp |
+| 3:10 – 3:24 | 0.28 | the first real brightening |
+| 3:24 – 3:40 | 0.49 – 0.53 | the image fills in, high contrast |
+| 3:40 – 3:44 | 0.58 | peak |
+| 3:44 – 3:52 | 0.25 | hard transition, drops back |
+| 3:52 – 4:00 | 0.40 | erratic, strobing, the hardest cuts of the segment |
 
-Min 0.065 @ 2:55.9 · Max 0.766 @ 3:58.4 · ends at 0.64 with a full 0–1 range.
-Per-frame data: `reference/noise_arc.csv` (2460 rows, regenerate with
+Min 0.056 @ 2:54 · Max 0.757 @ 3:57 · ends at 0.63.
+Per-frame data: `reference/noise_arc.csv` (3660 rows, regenerate with
 `scripts/analyse_arc.py`).
+
+> **The first seventy seconds are the whole problem.** 2:00–3:10 sits at a flat
+> 0.10 mean and never moves; the extra forty seconds gained by moving the in
+> point from 2:40 to 2:00 are all in that dead band. There is no arc to ride
+> there, so whatever happens in the first half has to be carried by your own
+> content, not by the plate. Budget for it.
 
 **You start from darkness and hand off bright and busy.** That is your
 dramaturgical contract with the artists either side of you.
@@ -212,12 +219,23 @@ Ten seconds of work, and it removes all of this guesswork.
 
 ## 7. Hardware and licences
 
+⚠ **Two different machines are described in this document.** The kit was written
+on a laptop; it is now being rendered on a desktop. `check_environment.ps1`
+reports the truth on whichever one you are sitting at — trust it over this table.
+
 ```
-GPU     NVIDIA RTX A2000 Laptop, 4 GB VRAM   (+ Intel UHD iGPU)
-CPU     i7-11850H, 8 cores / 16 threads
-RAM     32 GB
-Disk    C: ~41 GB free
+                  laptop (as written)          desktop (current render machine)
+GPU     NVIDIA RTX A2000 Laptop, 4 GB      NVIDIA RTX 4070 Ti SUPER, 16 GB
+CPU     i7-11850H, 8c / 16t                i7-6800K, 6c / 12t
+RAM     32 GB                              32 GB
+Disk    C: ~41 GB free                     E: ~97 GB free
 ```
+
+On the desktop there is no TouchDesigner and no Resolve installed at all, and
+16 GB of VRAM means the full canvas fits many times over. **Measured on it:
+2.35 s per full 9788×2552 frame, 14.3 MB per 8-bit PNG — so the whole 3660-frame
+segment is about 2.4 hours and 52 GB.** The ÷2 escape hatch in the 48h plan is
+almost certainly not needed.
 
 Canvas = **9788 × 2552 = 25.0 Mpx = 3.01× a 4K UHD frame**.
 One RGBA16F buffer at full canvas = **191 MB**.
