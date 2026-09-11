@@ -11,8 +11,9 @@ segment is 80 seconds, and the aesthetic you want — PSX — is the one aesthet
 that gets *cheaper* the more committed to it you are. The two things that could
 actually stop you are administrative, not creative:
 
-1. **The TouchDesigner licence.** Non-Commercial renders nothing above
-   1280×1280. Check this today.
+1. ~~The TouchDesigner licence.~~ **Settled: you do not have one, so TD is out
+   for rendering.** `scripts/render_shader.py` replaces it — same GLSL, plain
+   OpenGL 3.3, any resolution, no licence. See §2.
 2. **Storage.** You need roughly 150 GB of fast scratch. A 1–2 TB external NVMe
    solves it.
 
@@ -52,27 +53,40 @@ compression. **Ask the producer for the noise master** (see spec §3). At
 
 ---
 
-## 2. Toolchain
+## 2. Toolchain — no licence anywhere in it
 
-**Do the whole thing in TouchDesigner.** Use Unreal only if TD's 3D proves too
-limiting for the objects.
+TouchDesigner Non-Commercial refuses to output above 1280×1280, so it cannot
+produce a 9788×2552 delivery. Free DaVinci Resolve caps at 3840×2160. Rather
+than buy either under time pressure, the render runs on a plain OpenGL 3.3
+context:
 
-- The plate is the centre of the piece, and TD plays video into a texture
-  frame-accurately. Unreal's Media Framework is fiddly and can drift over 80 s.
-- Arbitrary canvas sizes are native. No fighting a 3.835:1 frame.
-- One network means one colour pipeline and one frame clock.
-- On 4 GB VRAM you need to control exactly how many buffers exist. TD lets you.
-- PSX is low-poly, vertex-lit, no shadows, no GI — exactly the subset of 3D TD
-  does well. You give up nothing.
+```
+python -m pip install moderngl
+python render_shader.py --div 4 --start 5700 --count 900 --mp4 --preview-width 1224
+```
 
-If you do need Unreal for skinned characters or physics, render **only the 3D
-layer** there as an EXR sequence with alpha at quarter resolution and composite
-it in TD. Do not make Unreal the spine.
+`scripts/render_shader.py` does the whole frame:
 
-C4D is worth having for modelling and for the venue toolkit — but note the
-licence on it is Educational, which is not valid for a paid commission.
+- **background** — `shaders/sky_oil.frag`, your own `PS1_SKY_FRAGMENT` with its
+  banded sky and thin-film oil, the `useLighting` cross-fade now driven by the
+  window mask
+- **objects** — low-poly cubes, pyramids, diamonds and spheres, flat-shaded,
+  vertex-snapped with your own `floor(pos * resolution) / resolution`
+- **composite** — objects screen-blended over the noise while travelling, then
+  sinking under it as they leave through a door
+- **output** — PNG sequence for delivery, or a small MP4 for review
 
----
+Measured on this machine: **31 fps at 2447×638** (faster than realtime), and a
+full 9788×2552 background frame costs about **0.14 s** even on the Intel iGPU.
+The GPU is not the bottleneck; decoding the noise and writing frames is.
+
+You can still use TouchDesigner to *design* within its 1280 limit if you prefer
+its interactivity — the shader is the same file, see `shaders/README.md`. But
+nothing in the delivery path needs it.
+
+If you later need skinned characters or physics, Unreal 5.6 is installed and its
+Movie Render Queue handles arbitrary resolutions with tiling. Render only the 3D
+layer there as EXR with alpha and composite it back.
 
 ## 3. The render strategy that fits on 4 GB
 

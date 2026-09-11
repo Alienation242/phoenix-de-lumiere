@@ -19,7 +19,8 @@ reference/                   canvas_layout.png        geometry diagram for the p
                              PxDL_SW_OPENING_SDF_*    distance from opening edges
                              facade_regions.json/csv  every region rectangle
                              noise_arc.csv            per-frame luma + motion
-scripts/                     check, build, extract, slice, encode, verify, preview
+scripts/     render_shader.py  ← renders the wall. no licence, any resolution
+             + check, build, extract, slice, encode, verify, preview
 shaders/     sky_oil.glsl    your own PS1_SKY_FRAGMENT ported to TD: banded sky
                              + thin-film oil, mixed by the window mask
              psx_*.glsl      vertex snapping, affine UVs, dither
@@ -44,9 +45,12 @@ it, never out-brighten it, and drive your parameters from its arc.
 projection surface — the colours describe surface type, not whether to light it.
 Multiply your comp by `MASK_08_PROJECTABLE` as the last step.
 
-**5. Two licence caps can silently kill this.** TouchDesigner Non-Commercial
-renders nothing above 1280×1280; free DaVinci Resolve caps at 3840×2160.
-`check_environment.ps1` flags both.
+**5. TouchDesigner is out for rendering.** Non-Commercial refuses to output above
+1280×1280 and you do not have a commercial licence. `scripts/render_shader.py`
+replaces it: the same GLSL on a plain OpenGL 3.3 context, any resolution, no
+licence of any kind. A full 9788×2552 frame costs ~0.14 s even on the Intel iGPU.
+Free DaVinci Resolve has the same problem (caps at 3840×2160) — you do not need
+it either.
 
 ---
 
@@ -91,7 +95,8 @@ python verify_plates.py --a "E:\PxDL\deliver\PxDL_SW_SPSW1_4770-7229.mov" `
 | `analyse_arc.py` | per-frame luma and motion → `noise_arc.csv`, and prints the cut list |
 | `master_to_plates.ps1` | master → lossless 16-bit plate sequences |
 | `make_delivery.ps1` | master → encoded plates in one pass (ProRes/DNxHR/FFV1/H.264/PNG16) |
-| `render_test.ps1` | **small preview video of anything you have rendered**, frame numbers burnt in |
+| `render_shader.py` | **renders the wall** — sky/oil + PS1 objects over the noise, any resolution, no licence |
+| `render_test.ps1` | small preview video of anything you have rendered, frame numbers burnt in |
 | `verify_plates.py` | resolution, frame count, and that the overlap is identical. **Always run this.** |
 | `preview_stitch.ps1` | stitches the plates back to one canvas for review |
 | `_common.ps1` / `_common.py` | path and ffmpeg resolution — nothing machine-specific anywhere else |

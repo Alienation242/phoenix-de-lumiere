@@ -12,23 +12,38 @@ hour 7.** Rough is fine. A finished 20 seconds is worth less than a rough 80.
 ## The schedule
 
 ### H0–2 · Unblock
-- [ ] `check_environment.ps1` — **the TouchDesigner licence is the one that can
-      end this.** Non-Commercial cannot render above 1280×1280.
+- [ ] `python -m pip install moderngl` — this is what replaces TouchDesigner.
+      TD Non-Commercial cannot output above 1280×1280 and you do not have a
+      commercial licence, so it is out of the delivery path entirely.
+- [ ] `check_environment.ps1`
 - [ ] External NVMe plugged in, output roots pointed at it.
 - [ ] Full ffmpeg installed (gyan.dev / BtbN) → `$env:PXDL_FFMPEG`. Without it
-      you have no ProRes and no H.264 previews.
-- [ ] `extract_segment.ps1 -Div 4` → your working noise plate.
+      you have no ProRes and your previews are ~7× larger than they need to be.
 - [ ] Put the ProRes master paths into `project.json` → `source_hq`.
+- [ ] Render 30 s and watch it:
+      `python render_shader.py --div 4 --start 5700 --count 900 --mp4 --preview-width 1224`
 
 ### H2–6 · The sky and the oil
-Build `shaders/sky_oil.glsl` in a GLSL TOP at 2447×638. This is your own
-`PS1_SKY_FRAGMENT` ported over — the 12-step banded sky and the thin-film oil
-are unchanged, and the `useLighting` mix that cross-faded them is now driven by
-the window mask.
+`shaders/sky_oil.frag` already runs. This is your own `PS1_SKY_FRAGMENT` — the
+12-step banded sky and the thin-film oil unchanged, with the `useLighting` mix
+that cross-faded them now driven by the window mask.
+
+Tune it with flags, re-render, watch. Each 30-second pass takes about 30 seconds.
+
+```
+--sky-gain 1.7      base sky brightness
+--oil-gain 2.6      oil intensity before tonemapping
+--spread 0.95       how much the oil bands across the width
+--cloud 0.55        cloud coverage
+--plate-mix 0.55    how hard the plate's dither shades the sky
+--horizon 0.34      where the horizon sits on the wall
+--bands 12          sky quantisation (their value)
+--levels 32         colour depth (32 = PSX)
+--color r,g,b       theme colour
+```
 
 - [ ] Sky + clouds on the wall, oil in the windows.
-- [ ] `uArc` and `uSkyToOil` driven from `reference/noise_arc.csv`.
-- [ ] Check `uPlateMix` — you must still see the plate's dither through it.
+- [ ] Check `--plate-mix` — you must still see the plate's dither through it.
 
 **Do not start the 3D until this reads well.** It is the whole 80 seconds; the
 objects are events inside it.
@@ -41,10 +56,13 @@ objects are events inside it.
 Watch it twice. Note where it sags. At ÷4 this render is minutes, not hours.
 
 ### H7–16 · The objects
-Spheres, cubes, pyramids. Low-poly, flat-shaded, `psx_vertex.glsl` +
-`psx_pixel.glsl`.
+Spheres, cubes, pyramids, diamonds — already rendering, flat-shaded and
+vertex-snapped, in through a window and out through a door. Tune with
+`--objects N`, `--seed N`, `--snap N` (lower = more wobble).
 
-The path: **in through a window, across the wall, out through a door.**
+The motion lives in `build_objects()` and `object_state()` in
+`render_shader.py` — paths, timing, scale, fade and the over/under cross-fade
+are all there in about 40 lines. That is where you art-direct them.
 
 ```
 doors (exit points)    centre x = 1758, 5076, 8332   at y ≈ 2184
@@ -82,7 +100,10 @@ Stop adding. Check against the plate's own structure:
       composite at full — you will not see the difference on a wall.
 
 ### H30–40 · The final render
-- [ ] Switch the noise input to the **ProRes master** (`-HQ`), not the mp4.
+```powershell
+python render_shader.py --div 1 --png --hq
+```
+- [ ] `--hq` switches the noise to the **ProRes masters**, not the mp4.
 - [ ] Render to a **16-bit PNG sequence**, never straight to a movie. A sequence
       survives a crash; a movie does not.
 - [ ] Render in **four chunks** (4770–5399, 5400–6099, 6100–6799, 6800–7229).
@@ -124,16 +145,10 @@ full pass before you deliver.
 
 At 9788×2552 you are rendering 25 Mpx per frame, 2460 times.
 
-| seconds per frame | total render |
-|---|---|
-| 1 | 41 min |
-| 3 | 2 h |
-| 5 | 3 h 25 |
-| 10 | 6 h 50 |
-| 20 | 13 h 40 — too slow, drop to ÷2 |
-
-Measure it at hour 24 and decide then. If a frame takes more than about 12
-seconds, take the ÷2 escape hatch and sleep instead.
+Measured: the background alone is **0.14 s per full frame** on the Intel iGPU,
+and at ÷4 the whole thing runs at **31 fps**. Expect the full-resolution pass to
+be limited by decoding the ProRes and writing 25 Mpx PNGs, not by the GPU —
+budget 1–3 hours, not a night. Measure one chunk at hour 24 and confirm.
 
 ---
 
@@ -141,6 +156,12 @@ seconds, take the ÷2 escape hatch and sleep instead.
 
 ```powershell
 cd C:\Projekte\PhoenixDeLumiere\_pipeline\scripts
+
+# render 30 s and watch it
+python render_shader.py --div 4 --start 5700 --count 900 --mp4 --preview-width 1224
+
+# the whole segment, full resolution, from the ProRes masters
+python render_shader.py --div 1 --png --hq
 
 # preview whatever you just rendered, with frame numbers burnt in
 .\render_test.ps1 -In "E:\PxDL\render\test\out.%05d.png" -Width 1632

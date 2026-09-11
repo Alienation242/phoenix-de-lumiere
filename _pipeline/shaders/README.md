@@ -1,10 +1,51 @@
-# Shader starting points
+# Shaders
 
-⚠ **These have not been compiled.** They are written to TouchDesigner's 2023
-GLSL conventions but there is no TD on this machine to build them against.
-Expect to fix a few lines on first load — check the GLSL TOP / MAT info popup
-for the error, it names the line. Treat them as a structured starting point,
-not drop-in code.
+**These compile and run.** `scripts/render_shader.py` builds them on a plain
+OpenGL 3.3 context — no TouchDesigner, no licence, any resolution.
+
+| file | what it is |
+|---|---|
+| `sky_oil.frag` | **the background.** Your own `PS1_SKY_FRAGMENT` from `shaderRefs/engine/shaders.ts` — hash / noise / fbm / fresnel / thinFilmReflectance verbatim, 12-step banded sky intact. The `useLighting` uniform that cross-faded sky ↔ oil is now driven per-pixel by the window mask: sky on the wall, oil in the windows. |
+| `psx_object.vert` | vertex snapping (`floor(pos * resolution) / resolution`, your own) + affine UVs |
+| `psx_object.frag` | flat colour, reduced colour depth, ordered dither |
+| `sky_oil.glsl`, `psx_vertex.glsl`, `psx_pixel.glsl`, `oil_clouds.glsl` | TouchDesigner-flavoured variants, kept in case you want to design inside TD's 1280 limit. **Not compiled** — expect to fix a few lines. |
+
+## Tuning `sky_oil.frag`
+
+Every uniform is a command-line flag on `render_shader.py`, so the loop is
+edit → render 30 s → watch, about 30 seconds a pass:
+
+```
+--sky-gain 1.7      base sky brightness (gaining the clouds too just clips them)
+--oil-gain 2.6      oil intensity before the tonemap
+--spread 0.95       how much the view angle varies across the wall. Their
+                    original was a sky dome so cosTheta swung a lot; this puts
+                    that swing back and is what bands the oil in rainbows.
+--cloud 0.55        coverage
+--plate-mix 0.55    how hard the plate's dither shades the sky
+--horizon 0.34      where the horizon sits on the wall
+--bands 12          sky quantisation — their value
+--levels 32         colour depth, 32 = PSX 5-bit
+--snap 140          vertex snap on the objects; lower = more wobble
+--color r,g,b       theme colour
+```
+
+One thing worth knowing: the plate does **not** screen-blend onto the sky. At
+peak brightness the plate is near-white and screening washed all the colour out.
+Its luma *shades* the sky instead — you keep every bit of the dither structure
+and the sky and oil keep their hue.
+
+---
+
+## Running them in TouchDesigner instead
+
+If you want TD's interactivity for design (remember it cannot output above
+1280×1280), the `.frag` files need four changes:
+
+1. `uniform sampler2D uPlate/uMasks/uOpenId` → `sTD2DInputs[0..2]`
+2. `in vec2 vUv` → `in vec3 vUV` and use `vUV.st`
+3. `out vec4 fragColor` → keep, but wrap the write: `fragColor = TDOutputSwizzle(...)`
+4. drop the `#version 330` line — TD adds its own
 
 ---
 

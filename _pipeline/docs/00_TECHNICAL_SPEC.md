@@ -227,15 +227,17 @@ new render PC.
 
 | tool | version | note |
 |---|---|---|
-| TouchDesigner | 2023.12230 | ⚠ **Non-Commercial caps output at 1280×1280** and cannot render this canvas. You need Commercial or Pro. |
+| TouchDesigner | 2023.12230 | ⚠ **Non-Commercial only — caps output at 1280×1280, so it cannot render this canvas.** Confirmed with the artist; TD is out of the delivery path. `scripts/render_shader.py` replaces it. |
 | Unreal Engine | 5.6 | Movie Render Queue handles arbitrary resolutions and tiled rendering |
-| DaVinci Resolve | 19.0, reports as non-Studio | ⚠ free Resolve caps output at 3840×2160. You need **Studio** for 9788 px. Check Help → About. |
+| DaVinci Resolve | 19.0, reports as non-Studio | ⚠ free Resolve caps output at 3840×2160. Not needed — nothing in the pipeline requires it. |
 | Cinema 4D | 2026, on another machine | title bar shows a **Non-Commercial / Educational** licence — not licensed for paid commissions |
 | Adobe | Photoshop / Premiere / Media Encoder 2026 | no After Effects |
 | Python | 3.11 + numpy | |
 | ffmpeg | TouchDesigner's build | decodes everything; **can only encode png / dpx / ffv1 / mjpeg / mpeg4** — no ProRes, DNxHR or H.264. Get a full build from gyan.dev or BtbN. |
 
-Those licence caps are hard blockers. Check them before you build anything.
+Neither licence cap blocks anything now: the render runs on a plain OpenGL 3.3
+context via `render_shader.py`, and the slicing, encoding and verification run on
+ffmpeg, Python and numpy. There is no licensed software in the delivery path.
 
 Useful integer divisors: gcd(9788, 2552) = 4, so only **÷2 = 4894 × 1276** and
 **÷4 = 2447 × 638** stay on whole pixels in both axes. Anything else puts the
