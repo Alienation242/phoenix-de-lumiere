@@ -63,6 +63,8 @@ uniform float uGrid;
 uniform float uReveal;
 uniform float uParIn;
 uniform float uIntro;         // 0 = the bare shared noise, 1 = the full treatment
+uniform float uSaturation;
+uniform float uArcFloor;      // how dark the wall is allowed to get at uArc = 0
 uniform float uPlateMean;     // THIS frame's mean luma, straight from noise_arc.csv
 uniform float uPlateContrast; // how hard the dither swings around that mean
 
@@ -116,8 +118,12 @@ void main() {
     float v = mix(grad, rel(L), uPlateDrive);
     v = floor(v * uBands + 0.5) / uBands;
 
-    vec3 zenith  = uColor * 0.52 + vec3(0.012, 0.018, 0.028);
-    vec3 horizon = uColor * 0.13 + vec3(0.016, 0.022, 0.032);
+    // A much wider spread between the two ends. The bands are driven by the
+    // plate, so the distance between zenith and horizon IS the contrast of
+    // everything the dither does on this wall - compress it and the whole
+    // surface goes flat however much gain you add afterwards.
+    vec3 zenith  = uColor * 0.92 + vec3(0.020, 0.030, 0.048);
+    vec3 horizon = uColor * 0.09 + vec3(0.010, 0.014, 0.022);
     vec3 sky = mix(horizon, zenith, v) * uSkyGain;
 
     // ---- oil ---------------------------------------------------------------
@@ -172,8 +178,9 @@ void main() {
     // lift, not the compositing step it used to be.
     col *= mix(1.0, 0.62 + 0.62 * L, uPlateMix);
 
-    col *= mix(0.25, 1.10, uArc);          // never brighter than the hall
+    col *= mix(uArcFloor, 1.25, uArc);     // never brighter than the hall
 
+    col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, uSaturation);
     col = quantise(col, uLevels, uGrid, gl_FragCoord.xy);
 
     // Hand-off. At uIntro 0 this wall is EXACTLY the shared plate, pixel for

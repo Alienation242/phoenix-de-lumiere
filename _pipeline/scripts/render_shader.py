@@ -484,6 +484,10 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
             return sum(g for _, _, g in w) or 1.0
 
         _wx, _wy = wander(), wander()
+        _ang = float(rng.uniform(0.0, 6.2832))
+        _ang2 = _ang + math.pi + float(rng.uniform(-1.1, 1.1))
+        _oin = (math.cos(_ang), math.sin(_ang) * 0.75)
+        _oout = (math.cos(_ang2), math.sin(_ang2) * 0.75)
         objs.append(dict(
             shape=names[i % len(names)],
             p0=(wx, wy), c1=c1, c2=c2, p2=(dx, dy),
@@ -525,6 +529,12 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
             # a persistent depth lane, so two objects rarely sit at the same z
             # and the separation solver almost never hits the degenerate case
             lane=float(rng.uniform(-1.0, 1.0)),
+            # Which SIDE of its window it comes through, and which side of the
+            # door it leaves by. Every object used to thread both openings dead
+            # centre, which made twelve different journeys look like one. The
+            # exit is roughly opposite the entry, so it reads as having crossed
+            # rather than doubled back.
+            off_in=_oin, off_out=_oout,
             # precession: a slow wobble ON TOP of the spin. Nothing in the real
             # world rotates at a perfectly constant rate about a fixed axis, and
             # the eye reads that immediately as machinery.
@@ -692,13 +702,19 @@ def object_state(o, t):
     # the hole actually has room for. The wander is normalised to -1..1 here
     # and scaled by the REAL remaining clearance, so this can never be what
     # pushes a shape into a frame.
+    # Both the chosen side and the wander are scaled by the REAL clearance left
+    # in this particular opening at this particular size, and together they use
+    # at most 90% of it - so neither can ever be what puts a shape into a frame.
     rect = o["win"] if pe < 0.5 else o["door"]
+    off = o["off_in"] if pe < 0.5 else o["off_out"]
     half = min(rect[2], rect[3])
     rad = scale * SHAPE_RADIUS.get(o["shape"], 1.4)
-    slack = max(half - rad, 0.0) * 0.45
+    slack = max(half - rad, 0.0)
     in_hole = 1.0 - clear
-    x += (wx / o["wsum_x"]) * slack * in_hole
-    y += (wy / o["wsum_y"]) * slack * 0.7 * in_hole
+    x += off[0] * slack * 0.55 * in_hole
+    y += off[1] * slack * 0.55 * in_hole
+    x += (wx / o["wsum_x"]) * slack * 0.35 * in_hole
+    y += (wy / o["wsum_y"]) * slack * 0.35 * 0.7 * in_hole
 
     alpha = smoother(pe, 0.0, 0.015) * (1.0 - smoother(pe, 0.99, 1.0))
 
@@ -751,9 +767,11 @@ def main():
                     help="overall object size multiplier")
     ap.add_argument("--speed", type=float, default=1.0,
                     help="lower is slower. divides every object's travel time")
-    ap.add_argument("--fit-margin", type=float, default=0.78,
+    ap.add_argument("--fit-margin", type=float, default=0.62,
                     help="how much of an opening an object may fill as it passes "
-                         "through. 1.0 touches the frame exactly; leave headroom")
+                         "through. Lower than it needs to be for clearance alone, "
+                         "because the leftover room is what lets an object sit off "
+                         "to one side of the hole instead of dead centre")
     ap.add_argument("--intro", type=float, default=10.0,
                     help="seconds to grow out of the bare shared plate, measured from "
                          "the segment IN point (not the render start, so handles show "
@@ -767,6 +785,9 @@ def main():
     ap.add_argument("--emerge", type=float, default=0.85,
                     help="how completely the oil claims an object that is still "
                          "out beyond the wall")
+    ap.add_argument("--emerge-tint", type=float, default=0.40,
+                    help="how much of the oil's hue a submerged object takes. 0 keeps "
+                         "it neutral grey, 1 gives it the film's full colour cast")
     ap.add_argument("--fog", type=float, default=0.48,
                     help="how hard the outside air knocks back an object beyond the "
                          "wall. lower is heavier")
@@ -808,8 +829,14 @@ def main():
     ap.add_argument("--horizon", type=float, default=0.34)
     ap.add_argument("--bands", type=float, default=12.0)
     ap.add_argument("--spread", type=float, default=0.95)
-    ap.add_argument("--sky-gain", type=float, default=1.7)
-    ap.add_argument("--oil-gain", type=float, default=5.0)
+    ap.add_argument("--sky-gain", type=float, default=2.15)
+    ap.add_argument("--saturation", type=float, default=1.45,
+                    help="chroma on the wall and the pillars. 1 = as computed, "
+                         "0 = greyscale")
+    ap.add_argument("--arc-floor", type=float, default=0.42,
+                    help="how far the plate's own darkness is allowed to pull the "
+                         "wall down. was 0.25, which crushed the quiet passages")
+    ap.add_argument("--oil-gain", type=float, default=6.8)
     ap.add_argument("--oil-sweep", type=float, default=0.55,
                     help="per-opening view-angle swing. above ~0.8 the film goes white at "
                          "the opening edges, which is the bug this replaced")
@@ -841,7 +868,7 @@ def main():
                          "architecture, so it stays tiny; the pillars' shading "
                          "carries the depth instead")
     ap.add_argument("--pillar-wobble", type=float, default=3.0)
-    ap.add_argument("--pillar-gain", type=float, default=0.85)
+    ap.add_argument("--pillar-gain", type=float, default=1.15)
     ap.add_argument("--pillar-z", type=float, default=1500.0,
                     help="how near the pillars stand, in the same units as the "
                          "objects (-900 out beyond the wall .. +1100 closest). "
@@ -1167,6 +1194,8 @@ def main():
         setu(bg_prog, "uPlateDrive", a.plate_drive)
         setu(bg_prog, "uPlateMean", plate_mean)
         setu(bg_prog, "uPlateContrast", a.plate_contrast)
+        setu(bg_prog, "uSaturation", a.saturation)
+        setu(bg_prog, "uArcFloor", a.arc_floor)
         setu(bg_prog, "uSpread", a.spread)
         setu(bg_prog, "uSkyGain", a.sky_gain)
         setu(bg_prog, "uOilGain", a.oil_gain)
@@ -1219,6 +1248,7 @@ def main():
             setu(obj_prog, "uAux", 1)
             setu(obj_prog, "uBg", 2)
             setu(obj_prog, "uEmerge", a.emerge)
+            setu(obj_prog, "uEmergeTint", a.emerge_tint)
             setu(obj_prog, "uFog", a.fog)
             # A FLAT ambient level, not the plate sampled per pixel. Reading the
             # plate at the fragment's screen position printed the wall's own
@@ -1332,6 +1362,7 @@ def main():
             setu(pil_prog, "uSkyGain", a.sky_gain)
             setu(pil_prog, "uGain", a.pillar_gain)
             setu(pil_prog, "uIntro", scene)
+            setu(pil_prog, "uSaturation", a.saturation)
             setu(pil_prog, "uLevels", a.levels)
             setu(pil_prog, "uGrid", a.dither_grid)
             setu(pil_prog, "uCol0", (float(col0["x"]), float(col0["y"]),

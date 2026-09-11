@@ -38,6 +38,7 @@ uniform vec3  uStone;         // warm, so the pillars read as objects in the roo
 uniform float uSkyGain;
 uniform float uGain;
 uniform float uIntro;
+uniform float uSaturation;
 uniform float uLevels;
 uniform float uGrid;
 uniform vec4  uCol0;          // x, y, w, h of column body 1, in canvas px
@@ -89,18 +90,24 @@ void main() {
 
     // NoV is 1 down the centre of the shaft and 0 at its edges, so this alone
     // is the cylinder. It needs real range or the pillar reads as a flat slab.
-    vec3 col = uStone * (0.13 + 0.80 * NoV) + env * 0.20;
+    // Brighter and with far more range across the shaft than before. These are
+    // meant to be lit stone standing in the room, not silhouettes.
+    vec3 col = uStone * (0.30 + 1.05 * NoV) + env * 0.34;
 
     // a vertical specular band that slides around the shaft as the camera moves
     float band = pow(max(dot(N, normalize(vec3(0.55 - camN * 0.8, 0.25, 0.8))), 0.0), 14.0);
     col += mix(uColor, vec3(1.0), 0.35) * band * 0.55;
 
-    // cap and plinth are brighter and flatter than the shaft
-    col = mix(col, col * 1.30 + uStone * 0.10, trim * (1.0 - body));
+    // cap and plinth, distinguished gently. The old version multiplied by 1.30
+    // only where trim sits outside the body, which drew a hard horizontal seam
+    // straight across the pillar at the cap line.
+    col = mix(col, col * 1.12 + uStone * 0.05, trim * 0.6);
 
-    // contact darkening at the silhouette, so the pillar bites against the wall
-    float edge = smoothstep(0.0, 0.10, min(u, 1.0 - u));
-    col *= mix(0.45, 1.0, edge);
+    // No contact darkening. It multiplied the silhouette down to 0.45 and drew
+    // a hard dark stripe down both sides of every pillar - a painted-on shadow,
+    // not a contact shadow, and the first thing you see on the wall. The
+    // cylinder shading above already turns the shaft away at its edges, which
+    // is the part that was doing real work.
 
     // the plate shades the pillars too, harder than before - it is the base
     // for everything on this wall, the pillars included
@@ -108,6 +115,7 @@ void main() {
     col *= mix(0.45, 1.30, Lp);
     col *= mix(0.30, 1.10, uArc) * uGain;
 
+    col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, uSaturation);
     col = quantise(col, uLevels, uGrid, gl_FragCoord.xy);
     col *= texture(uMasks, vUv).a;        // a shifted pillar must still not light black
 
