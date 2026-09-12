@@ -39,6 +39,13 @@ PLATE_H = CFG["plates"][0]["h"]
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", default=SRC_DEFAULT)
+    ap.add_argument("--hq", action="store_true",
+                    help="measure the ProRes / uncompressed master from "
+                         "source_hq.SPSW1 instead of the mp4. REQUIRED once the "
+                         "render switches to --hq: this CSV supplies uPlateMean, "
+                         "which centres the dither that drives the sky bands and "
+                         "the oil thickness. Measured on one source and rendered "
+                         "from another, the wall's whole contrast is off.")
     ap.add_argument("--start", type=int, default=SEG["in"] - SEG["handles"], help="first loop frame")
     ap.add_argument("--count", type=int,
                     default=(SEG["out"] - SEG["in"] + 1) + 2 * SEG["handles"], help="number of frames")
@@ -47,6 +54,11 @@ def main():
     a = ap.parse_args()
 
     a.ffmpeg = ffmpeg()
+    if a.hq:
+        hq = CFG.get("source_hq", {})
+        if not hq.get("SPSW1"):
+            sys.exit("--hq needs source_hq.SPSW1 filled in in project.json")
+        a.src = hq["SPSW1"]
     if not os.path.isfile(a.src):
         sys.exit("source not found: %s" % a.src)
 

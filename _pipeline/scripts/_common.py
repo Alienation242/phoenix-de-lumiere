@@ -37,6 +37,38 @@ DELIVER_ROOT = _root("PXDL_DELIVER_ROOT", CFG["dirs"]["deliver"])
 MASK_ROOT = os.path.join(ROOT, CFG["dirs"]["masks"])
 REF_ROOT = os.path.join(ROOT, CFG["dirs"]["reference"])
 
+# The same facade, described two ways. "layer" is the colour-coded mask that was
+# supplied with the project. "noise" is the facade traced out of the shared noise
+# plate itself - the plate has the windows, doors and columns drawn into it, with
+# a visible border, and the two do not agree everywhere. Both sets live side by
+# side so a render can be done either way and the two compared.
+MASK_ROOT_NOISE = MASK_ROOT + "_noise"
+REF_ROOT_NOISE = REF_ROOT + "_noise"
+MASK_VARIANTS = ("layer", "noise")
+
+
+def mask_dirs(variant="layer"):
+    """(mask folder, reference folder) for a mask variant."""
+    if variant not in MASK_VARIANTS:
+        sys.exit("mask variant must be one of %s, not %r"
+                 % (" / ".join(MASK_VARIANTS), variant))
+    if variant == "noise":
+        return MASK_ROOT_NOISE, REF_ROOT_NOISE
+    return MASK_ROOT, REF_ROOT
+
+
+def ref_file(name, ref_root=None):
+    """A reference asset, falling back to the shared reference folder.
+
+    noise_arc.csv is measured off the plate and has nothing to do with which
+    mask set is in use, so the noise variant does not keep its own copy of it.
+    """
+    if ref_root:
+        p = os.path.join(ref_root, name)
+        if os.path.isfile(p):
+            return p
+    return os.path.join(REF_ROOT, name)
+
 CANVAS_W = CFG["canvas"]["w"]
 CANVAS_H = CFG["canvas"]["h"]
 FPS = CFG["fps"]

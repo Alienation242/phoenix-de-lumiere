@@ -11,15 +11,23 @@ docs/00_TECHNICAL_SPEC.md    what the files actually are
 docs/01_PIPELINE.md          how to build and render it
 docs/02_PORTABLE_RENDER.md   moving to another machine / render node
 docs/04_DECISIONS.md         why things are the way they are
+docs/04_DELIVERY.md          handing the files over. the producer reads this
+docs/05_MASKS.md             the two mask sets, and which one is right
 
 project.json                 every constant. the scripts read it, so edit it here
 masks/                       31 cleaned region mattes, full canvas + per-plate
+masks_noise/                 the same 31, traced out of the shared noise plate
 reference/                   canvas_layout.png        geometry diagram for the producer
                              openings.json            all 27 windows and doors
                              PxDL_SW_OPENING_ID_*     R=opening index, GB=local UV
                              PxDL_SW_OPENING_SDF_*    distance from opening edges
                              facade_regions.json/csv  every region rectangle
                              noise_arc.csv            per-frame luma + motion
+reference_noise/             the same, for the traced set, plus
+                             PxDL_SW_NOISE_STATIC_*   the plate with the dither
+                                                      averaged away - the
+                                                      architecture it draws
+                             PxDL_SW_MASK_COMPARE_*   both outlines over it
 scripts/     render_shader.py  ← renders the wall. no licence, any resolution
              + check, build, extract, slice, encode, verify, preview
 shaders/     lib_common.glsl  hash/noise/fbm/fresnel/thin-film + skyEnv(), shared

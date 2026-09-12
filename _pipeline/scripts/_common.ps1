@@ -41,6 +41,16 @@ $script:DeliverRoot = Resolve-Root 'PXDL_DELIVER_ROOT' $Cfg.dirs.deliver
 $script:MaskRoot    = Join-Path $ProjectRoot $Cfg.dirs.masks
 $script:RefRoot     = Join-Path $ProjectRoot $Cfg.dirs.reference
 
+# The same facade described two ways - see build_masks.py. 'Layer' is the
+# authored colour-coded mask; 'Noise' is the facade traced out of the shared
+# noise plate, which draws its own windows, doors and columns.
+function Get-MaskRoots([string]$Variant = 'Layer') {
+    if ($Variant -eq 'Noise') {
+        return @{ Masks = ($MaskRoot + '_noise'); Reference = ($RefRoot + '_noise') }
+    }
+    return @{ Masks = $MaskRoot; Reference = $RefRoot }
+}
+
 # ---- ffmpeg -----------------------------------------------------------------
 function Find-FFmpeg {
     if ($env:PXDL_FFMPEG) {

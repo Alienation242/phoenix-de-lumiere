@@ -44,7 +44,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _common import (CFG, MASK_ROOT, REF_ROOT, RENDER_ROOT, WORK_ROOT,  # noqa: E402
-                     ffmpeg, source)
+                     MASK_VARIANTS, ffmpeg, mask_dirs, ref_file, source)
 
 SHADERS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shaders")
 
@@ -68,6 +68,60 @@ FPS = CFG["fps"]
 
 # --------------------------------------------------------------------------- shader loading
 
+class Tee(object):
+    """stdout that also lands in a file.
+
+    The progress bar rewrites ONE line with a carriage return, which is what
+    makes it look like a bar filling rather than four thousand lines scrolling
+    past. That only works while stdout is the console itself - put a pipe in
+    front of it and every update becomes its own line, in the terminal and in
+    the log. So the render is no longer piped anywhere: it writes its own log
+    through this, and anything that starts with a carriage return is treated as
+    a bar update and kept out of the file.
+    """
+
+    def __init__(self, base, fh):
+        self._b = base
+        self._f = fh
+
+    def write(self, s):
+        self._b.write(s)
+        if not s.startswith("\r"):
+            self._f.write(s)
+            self._f.flush()
+        return len(s)
+
+    def note(self, s):
+        """Into the log only - the console already has the live bar."""
+        self._f.write(s + "\n")
+        self._f.flush()
+
+    def flush(self):
+        self._b.flush()
+
+    def isatty(self):
+        return self._b.isatty()
+
+
+LOG_FH = None
+
+
+def open_log(path):
+    """Point stdout and stderr at `path` as well as at the console."""
+    global LOG_FH
+    if not path:
+        return None
+    d = os.path.dirname(os.path.abspath(path))
+    if d:
+        os.makedirs(d, exist_ok=True)
+    fh = open(path, "a", encoding="utf-8")
+    fh.write("\n%s\n%s\n" % ("-" * 70, " ".join(sys.argv)))
+    sys.stdout = Tee(sys.stdout, fh)
+    sys.stderr = Tee(sys.stderr, fh)
+    LOG_FH = fh
+    return fh
+
+
 def be_polite(threads):
     """Drop this process below normal priority.
 
@@ -90,10 +144,17 @@ def be_polite(threads):
 
 
 def popen_polite(args, **kw):
-    """Popen, but the child process is below normal priority too."""
+    """Popen, but the child process is below normal priority too.
+
+    Its stderr goes into the log when there is one. ffmpeg inherits a real OS
+    handle, not our Tee, so without this an encoder's complaint would reach the
+    console and never the file.
+    """
     flags = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
     if flags:
         kw["creationflags"] = kw.get("creationflags", 0) | flags
+    if LOG_FH is not None and "stderr" not in kw:
+        kw["stderr"] = LOG_FH
     return subprocess.Popen(args, **kw)
 
 
@@ -330,6 +391,16 @@ def normal_matrix(m):
         return np.linalg.inv(m[:3, :3]).T.astype("f4")
     except np.linalg.LinAlgError:
         return np.eye(3, dtype="f4")
+
+
+def hms(sec):
+    """Seconds as something a person can read at a glance."""
+    sec = int(max(sec, 0))
+    if sec >= 3600:
+        return "%dh %02dm" % (sec // 3600, (sec % 3600) // 60)
+    if sec >= 60:
+        return "%dm %02ds" % (sec // 60, sec % 60)
+    return "%ds" % sec
 
 
 def smooth(x, a, b):
@@ -959,10 +1030,15 @@ def main():
     ap.add_argument("--count", type=int, default=None)
     ap.add_argument("--png", action="store_true", help="write a PNG sequence (for delivery)")
     ap.add_argument("--plates", action="store_true",
-                    help="write the TWO PROJECTOR PLATES directly, sliced from the same "
-                         "frame in memory. This is the delivery path: it needs no "
-                         "master sequence on disk, and the 1000 px overlap is identical "
-                         "in both plates by construction rather than by process")
+                    help="shorthand for --layout plates")
+    ap.add_argument("--layout", default="none",
+                    choices=("none", "plates", "canvas", "both"),
+                    help="what to write. plates = the TWO PROJECTOR PLATES, sliced "
+                         "from the same frame in memory, which is the delivery and "
+                         "makes the 1000 px overlap identical in both by construction. "
+                         "canvas = ONE stitched 9788x2552 file. both = all three, from "
+                         "the same render, for when you do not yet know which the "
+                         "producer wants")
     ap.add_argument("--codec", default="prores422hq", choices=sorted(CODECS),
                     help="codec for --plates")
     ap.add_argument("--mp4", action="store_true", help="write a preview MP4")
@@ -970,6 +1046,19 @@ def main():
     ap.add_argument("--preview-width", type=int, default=0,
                     help="downscale the MP4 to this width (render stays full size)")
     ap.add_argument("--hq", action="store_true", help="use the ProRes masters from source_hq")
+    ap.add_argument("--masks", default="layer", choices=MASK_VARIANTS,
+                    help="which description of the facade to render against. "
+                         "'layer' is the authored colour-coded mask that came "
+                         "with the project. 'noise' is the same facade traced "
+                         "out of the shared plate itself, which draws its own "
+                         "windows, doors and columns and does not agree with "
+                         "the authored mask everywhere. Build it first with "
+                         "build_masks.py --from-noise. Output files are named "
+                         "after whichever was used, so both can be rendered "
+                         "one after the other without overwriting each other")
+    ap.add_argument("--log", default="",
+                    help="also write everything printed here to this file. The "
+                         "live progress bar is left out of it")
     ap.add_argument("--no-objects", action="store_true")
     ap.add_argument("--no-pillars", action="store_true")
     ap.add_argument("--objects", type=int, default=26,
@@ -1119,6 +1208,14 @@ def main():
 
     if not a.png and not a.mp4:
         a.mp4 = True
+    open_log(a.log)
+
+    global MASK_ROOT, REF_ROOT
+    MASK_ROOT, REF_ROOT = mask_dirs(a.masks)
+    if not os.path.isdir(MASK_ROOT):
+        sys.exit("the '%s' mask set has not been built yet - there is no %s.\n"
+                 "Build it with:   python build_masks.py --from-noise"
+                 % (a.masks, MASK_ROOT))
     seg = CFG["segment"]
     if a.start is None:
         a.start = seg["in"] - seg["handles"]
@@ -1137,6 +1234,9 @@ def main():
     print()
     print("render    %d x %d  (1/%d)   frames %d..%d  (%d, %.1f s)"
           % (W, H, a.div, a.start, a.start + a.count - 1, a.count, a.count / float(FPS)))
+    print("masks     %s  (%s)"
+          % (a.masks, "authored colour mask" if a.masks == "layer"
+             else "traced out of the noise plate"))
 
     ctx = moderngl.create_standalone_context(require=330)
     print("gpu       %s" % ctx.info["GL_RENDERER"])
@@ -1254,7 +1354,7 @@ def main():
     # Read before the objects are built, because where the plate ENDS decides
     # when they have to have landed.
     plate_arc = {}
-    arc_path = os.path.join(REF_ROOT, "noise_arc.csv")
+    arc_path = ref_file("noise_arc.csv", REF_ROOT)
     if os.path.isfile(arc_path):
         with open(arc_path) as fh:
             for row in csv.DictReader(fh):
@@ -1301,13 +1401,27 @@ def main():
     print("pillars   %d columns" % len(cols))
 
     # ---- noise stream -----------------------------------------------------
-    v1 = source("SPSW1") if not a.hq else None
-    v2 = source("SPSW2") if not a.hq else None
+    # The noise can arrive either way: as the two projector plates, like the
+    # preview mp4s, or already stitched into one 9788x2552 canvas. Both are
+    # handled - set source_hq.STITCHED for a single file, or SPSW1/SPSW2 for a
+    # pair, and STITCHED wins if both are present.
+    v1 = v2 = stitched = None
     if a.hq:
         hq = CFG.get("source_hq", {})
-        if not hq.get("SPSW1") or not hq.get("SPSW2"):
-            sys.exit("--hq needs source_hq.SPSW1 / SPSW2 filled in in project.json")
-        v1, v2 = hq["SPSW1"], hq["SPSW2"]
+        stitched = hq.get("STITCHED") or None
+        if stitched:
+            if not os.path.isfile(stitched):
+                sys.exit("source_hq.STITCHED does not exist: %s" % stitched)
+        elif hq.get("SPSW1") and hq.get("SPSW2"):
+            v1, v2 = hq["SPSW1"], hq["SPSW2"]
+            for p_ in (v1, v2):
+                if not os.path.isfile(p_):
+                    sys.exit("source_hq file does not exist: %s" % p_)
+        else:
+            sys.exit("--hq needs either source_hq.STITCHED (one 9788x2552 file) or "
+                     "both source_hq.SPSW1 and SPSW2, in project.json")
+    else:
+        v1, v2 = source("SPSW1"), source("SPSW2")
     ss = "%.6f" % (a.start / float(FPS))
     p1w, p2w = CFG["plates"][0]["w"], CFG["plates"][1]["w"]
     cut = p1w - CFG["overlap"]["w"]
@@ -1321,32 +1435,59 @@ def main():
     for nm, val in (("plate 1", p1w), ("the cut", cut), ("plate 2", p2w)):
         if val % a.div:
             sys.exit("--div %d does not divide %s (%d) evenly" % (a.div, nm, val))
-    fc = ("[0:v]scale=%d:%d:flags=area,crop=%d:%d:0:0[l];"
-          "[1:v]scale=%d:%d:flags=area[r];[l][r]hstack=2"
-          % (p1w // a.div, H, cut // a.div, H, p2w // a.div, H))
+    if stitched:
+        # Already one canvas: nothing to crop, nothing to stack. The overlap is
+        # inside the file exactly where it belongs.
+        print("noise     stitched canvas  %s" % os.path.basename(stitched))
+        noise_cmd = ([ff, "-hide_banner", "-loglevel", "error",
+                      "-threads", str(a.threads), "-ss", ss, "-i", stitched,
+                      "-vf", "scale=%d:%d:flags=area" % (W, H)])
+    else:
+        fc = ("[0:v]scale=%d:%d:flags=area,crop=%d:%d:0:0[l];"
+              "[1:v]scale=%d:%d:flags=area[r];[l][r]hstack=2"
+              % (p1w // a.div, H, cut // a.div, H, p2w // a.div, H))
+        noise_cmd = ([ff, "-hide_banner", "-loglevel", "error",
+                      "-threads", str(a.threads),
+                      "-ss", ss, "-i", v1, "-ss", ss, "-i", v2,
+                      "-filter_complex", fc])
     noise = popen_polite(
-        [ff, "-hide_banner", "-loglevel", "error", "-threads", str(a.threads),
-         "-ss", ss, "-i", v1, "-ss", ss, "-i", v2,
-         "-filter_complex", fc, "-frames:v", str(a.count),
-         "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
+        noise_cmd + ["-frames:v", str(a.count),
+                     "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
         stdout=subprocess.PIPE, bufsize=W * H * 3 * 2)
 
     # ---- output sink ------------------------------------------------------
+    layout = a.layout
+    if a.plates and layout == "none":
+        layout = "plates"
+
     sinks = []
-    if a.plates:
-        if a.div not in (1, 2):
-            sys.exit("--plates needs --div 1 or 2. At --div 4 the right plate is "
-                     "3588/4 = 897 px wide, and no delivery codec can encode an "
-                     "odd width.")
+    if layout != "none":
         spec = CODECS[a.codec]
         outdir = a.out or os.path.join(RENDER_ROOT, "deliver")
         os.makedirs(outdir, exist_ok=True)
         last = a.start + a.count - 1
-        for pl in CFG["plates"]:
-            x0 = pl["x"] // a.div
-            pw = pl["w"] // a.div
-            name = "PxDL_SW_%s_%05d-%05d.%s" % (pl["name"], a.start, last, spec["ext"])
-            path = os.path.join(outdir, name)
+
+        targets = []
+        if layout in ("plates", "both"):
+            for pl in CFG["plates"]:
+                targets.append((pl["name"], pl["x"] // a.div, pl["w"] // a.div))
+        if layout in ("canvas", "both"):
+            targets.append(("CANVAS", 0, CW // a.div))
+
+        # Every delivery codec here subsamples or aligns on even dimensions, so
+        # an odd width cannot be encoded at all. At --div 4 the right plate is
+        # 3588/4 = 897 and the stitched canvas is 2447 - both odd. Better to say
+        # so plainly than to fail inside ffmpeg thirty seconds later.
+        for nm, _x, pw in targets:
+            if pw % 2 or H % 2:
+                sys.exit("--layout %s at --div %d gives %s a %dx%d frame, and an odd "
+                         "dimension cannot be encoded. Use --div 1 or 2."
+                         % (layout, a.div, nm, pw, H))
+
+        for nm, x0, pw in targets:
+            fname = "PxDL_SW_%s_%05d-%05d_MASK-%s.%s" % (
+                nm, a.start, last, a.masks.upper(), spec["ext"])
+            path = os.path.join(outdir, fname)
             proc = popen_polite(
                 [ff, "-hide_banner", "-loglevel", "error", "-y",
                  "-threads", str(a.threads),
@@ -1356,9 +1497,9 @@ def main():
                 ["-color_primaries", "bt709", "-color_trc", "bt709",
                  "-colorspace", "bt709", path],
                 stdin=subprocess.PIPE)
-            sinks.append(dict(proc=proc, x0=x0, x1=x0 + pw, name=pl["name"], path=path))
-            print("plate     %-6s x %d..%d  ->  %dx%d  %s"
-                  % (pl["name"], pl["x"], pl["x"] + pl["w"], pw, H, name))
+            sinks.append(dict(proc=proc, x0=x0, x1=x0 + pw, name=nm, path=path))
+            print("output    %-6s canvas x %d..%d  ->  %dx%d  %s"
+                  % (nm, x0 * a.div, (x0 + pw) * a.div, pw, H, fname))
         dst = outdir
     elif a.png:
         outdir = a.out or os.path.join(RENDER_ROOT, "master_%dx%d" % (W, H))
@@ -1392,7 +1533,10 @@ def main():
         sink_args += [dst]
         print("out       %s" % dst)
     sink = None
-    if not a.plates:
+    # sinks is what decides this now, not the old --plates flag: with
+    # --layout the delivery sinks exist while a.plates is still False, and this
+    # went looking for sink_args that were never built.
+    if not sinks:
         sink = popen_polite(
             [ff, "-hide_banner", "-loglevel", "error", "-y", "-threads", str(a.threads),
              "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (W, H),
@@ -1406,6 +1550,16 @@ def main():
     env_cool = np.array([float(x) for x in a.env_cool.split(",")], "f4")
     film = [float(x) for x in a.film.split(",")]
     nbytes = W * H * 3
+    # A bar that rewrites its own line needs a console to rewrite it. If stdout
+    # is a file or a pipe, \r does nothing useful and every update lands as
+    # another line, so fall back to an occasional milestone instead.
+    live_bar = False
+    try:
+        live_bar = bool(sys.stdout.isatty())
+    except Exception:
+        live_bar = False
+    note_every = max(30, int(a.count / 20.0))
+    next_note = 0
     t_start = time.time()
     print()
 
@@ -1688,7 +1842,7 @@ def main():
         fbo_final.use(); fbo_final.clear(0, 0, 0, 1); comp_vao.render()
 
         if sinks:
-            # ONE frame, sliced two ways. Both plates therefore carry byte-identical
+            # ONE frame, sliced however many ways. The plates therefore carry byte-identical
             # content through the 1000 px overlap, and full brightness in both -
             # which is the single requirement the delivery cannot get wrong. There
             # is no master on disk to drift from, and no second render to disagree.
@@ -1700,13 +1854,28 @@ def main():
         else:
             sink.stdin.write(fbo_final.read(components=3))
 
-        if k % 30 == 0 or k == a.count - 1:
+        if k % 15 == 0 or k == a.count - 1:
             el = time.time() - t_start
-            fps = (k + 1) / max(el, 1e-6)
-            eta = (a.count - k - 1) / max(fps, 1e-6)
-            sys.stdout.write("\r  frame %5d / %d   %.1f fps   eta %4.0f s   " %
-                             (k + 1, a.count, fps, eta))
-            sys.stdout.flush()
+            done = k + 1
+            fps = done / max(el, 1e-6)
+            eta = (a.count - done) / max(fps, 1e-6)
+            frac = done / float(max(a.count, 1))
+            filled = int(round(frac * 36))
+            bar = ("  [%s%s] %3d%%  %5d/%-5d  %4.1f fps  %s left    "
+                   % ("#" * filled, "." * (36 - filled), int(frac * 100),
+                      done, a.count, fps, hms(eta)))
+            if live_bar:
+                # ONE line, rewritten in place, so it reads as a bar filling up
+                sys.stdout.write("\r" + bar)
+                sys.stdout.flush()
+            if done >= next_note or done == a.count:
+                next_note = done + note_every
+                if not live_bar:
+                    # nothing to rewrite - output is a file or a pipe - so leave
+                    # a readable trail rather than 4000 copies of the same line
+                    print(bar.rstrip())
+                elif hasattr(sys.stdout, "note"):
+                    sys.stdout.note(bar.rstrip())        # log only
 
     if sinks:
         for sk in sinks:

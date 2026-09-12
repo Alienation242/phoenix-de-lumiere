@@ -59,9 +59,10 @@
     "venue": "RawNoise/3d room mask.png"
   },
   "source_hq": {
-    "_note": "Paths to the ProRes masters of the noise. Absolute paths are fine (put them on the external drive). Fill these in and pass -HQ to extract_segment.ps1; the FINAL render must use these, the mp4s are preview-grade (0.019 bits/pixel).",
+    "_note": "Paths to the high-quality noise. Fill in EITHER 'STITCHED' with one 9788x2552 file, OR 'SPSW1' and 'SPSW2' with the two projector plates - STITCHED wins if both are set. Absolute paths are fine. Then run check_hq.py, then analyse_arc.py --hq, then export with -HQ. The final render should use these: the mp4s are 0.019 bits/pixel and the plate now DRIVES the image rather than sitting under it.",
     "SPSW1": "",
-    "SPSW2": ""
+    "SPSW2": "",
+    "STITCHED": ""
   },
   "dirs": {
     "masks": "_pipeline/masks",

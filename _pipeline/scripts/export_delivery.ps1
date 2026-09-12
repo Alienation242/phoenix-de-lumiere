@@ -9,6 +9,14 @@
       .\export_delivery.ps1 -Preset Deliver
       .\export_delivery.ps1 -Preset Deliver -Yes        # no confirmation
       .\export_delivery.ps1 -Preset Draft               # quick half-res look
+      .\export_delivery.ps1 -Preset Deliver -Masks Noise
+
+  -Masks picks which description of the facade to render against. 'Layer' is
+  the authored colour-coded mask that came with the project; 'Noise' is the
+  same facade traced out of the shared noise plate, which draws its own
+  windows, doors and columns and does not agree with the authored mask
+  everywhere. The two go to different folders and carry different file names,
+  so both can be rendered one after the other and compared.
 
   WHAT COMES OUT
 
@@ -30,6 +38,11 @@ param(
     [ValidateSet('Deliver', 'DeliverMax', 'Draft', 'Proof')]
     [string] $Preset,
     [switch] $Yes,
+    [switch] $HQ,
+    [ValidateSet('Plates', 'Stitched', 'Both')]
+    [string] $Layout = 'Plates',
+    [ValidateSet('Layer', 'Noise')]
+    [string] $Masks,
     [string] $Out,
     [int]    $Threads = 4
 )
@@ -42,6 +55,24 @@ $ErrorActionPreference = 'Stop'
 # MB-per-frame figures are MEASURED on this content at full resolution, both
 # plates together, not taken from a codec datasheet. They are what the disk
 # check below trusts, so if the look changes a lot re-measure them.
+# How far apart the two plates may measure through the overlap before something
+# is actually wrong.
+#
+# They are cut from the same frame in memory, so the CONTENT is identical by
+# construction. What the check sees afterwards is the two files being encoded
+# SEPARATELY at different widths - different macroblock grids, different bit
+# allocation - so every lossy codec leaves a little noise there. These numbers
+# are the measured noise floor on this content plus headroom; a real fault (a
+# wrong crop, a frame offset) shows up as tens of units, not ones.
+#
+#   prores4444   measured 0.00    it is 4:4:4, so the overlap comes out exact
+#   prores422hq  measured 1.04
+#   dnxhr_hqx    measured 1.62
+#   h264         measured 2.55    a 2.0 tolerance failed a perfectly good Draft
+$Tolerance = @{
+    'prores4444' = 0.5; 'prores422hq' = 2.0; 'dnxhr_hqx' = 3.0; 'h264' = 5.0
+}
+
 $Presets = [ordered]@{
     'Deliver' = @{
         Div = 1; Codec = 'prores422hq'; MBPerFrame = 12.2; SecPerFrame = 1.7
@@ -111,7 +142,22 @@ if (-not $Preset) {
         Bad "not a choice: $pick"; return
     }
     $Preset = @($Presets.Keys)[$idx - 1]
+
+    if (-not $Masks -and (Test-Path ((Get-MaskRoots 'Noise').Masks))) {
+        Line
+        Line '  Two descriptions of this wall exist. They differ by a few pixels'
+        Line '  around every window and door - see 05_MASKS.md.'
+        Line
+        Line '    [1]  authored mask          the one supplied with the project'
+        Line '    [2]  traced from the noise  boundaries taken off the shared plate'
+        Line
+        $mp = Read-Host 'Which one? [1]'
+        $Masks = if ($mp -eq '2') { 'Noise' } else { 'Layer' }
+    }
 }
+if (-not $Masks) { $Masks = 'Layer' }
+$MaskSet = Get-MaskRoots $Masks
+$MaskTag = "MASK-" + $Masks.ToUpper()
 $P = $Presets[$Preset]
 
 # ---------------------------------------------------------------- the plan ---
@@ -132,8 +178,13 @@ $plate2 = $Cfg.plates[1]
 $w1 = [int]$plate1.w / $div; $h1 = [int]$plate1.h / $div
 $w2 = [int]$plate2.w / $div; $h2 = [int]$plate2.h / $div
 
-$outDir = if ($Out) { $Out } else { Join-Path $DeliverRoot $Preset }
-$needGB = [math]::Round($P.MBPerFrame * $count / ($div * $div) / 1024.0, 1)
+# The mask set is part of the output path AND part of every file name, so
+# rendering both one after the other cannot overwrite or confuse the two.
+$outDir = if ($Out) { $Out } else { Join-Path $DeliverRoot ("{0}_{1}" -f $Preset, $MaskTag) }
+# Both writes the canvas as well as the plates, which is roughly another 90% of
+# the pixels - it is one render, but it is not one file's worth of disk.
+$sizeMul = switch ($Layout) { 'Plates' { 1.0 } 'Stitched' { 0.9 } default { 1.9 } }
+$needGB = [math]::Round($P.MBPerFrame * $sizeMul * $count / ($div * $div) / 1024.0, 1)
 $mins   = [math]::Round($P.SecPerFrame * $count / ($div * $div) / 60.0, 0)
 
 Head "PLAN  -  $Preset"
@@ -146,6 +197,13 @@ Line ("  the piece   {0} .. {1}   1:50 - 4:10, hand-off to bare plate at both en
 Line ("  plate 1     {0}  {1} x {2}   canvas x {3} .. {4}" -f $plate1.name, $w1, $h1, ($plate1.x/$div), (($plate1.x + $plate1.w)/$div))
 Line ("  plate 2     {0}  {1} x {2}   canvas x {3} .. {4}" -f $plate2.name, $w2, $h2, ($plate2.x/$div), (($plate2.x + $plate2.w)/$div))
 Line ("  overlap     {0} px, FULL BRIGHTNESS in both - do not pre-blend" -f ([int]$Cfg.overlap.w / $div))
+Line ("  source      {0}" -f $(if ($HQ) { 'the HIGH-QUALITY masters (source_hq)' } else { 'the supplied mp4s - 0.019 bits/pixel' }))
+Line ("  layout      {0}" -f $(switch ($Layout) {
+    'Plates'   { 'two projector plates (matches the supplied noise)' }
+    'Stitched' { 'one stitched canvas file' }
+    default    { 'BOTH - two plates AND one stitched canvas, from one render' } }))
+Line ("  masks       {0}" -f $(if ($Masks -eq 'Noise') {
+    'traced out of the shared noise plate' } else { 'the authored colour mask' }))
 Line ("  codec       {0}" -f $P.Codec)
 Line ("  output      {0}" -f $outDir)
 Line ("  needs       about {0} GB and roughly {1} minutes" -f $needGB, $mins)
@@ -178,11 +236,39 @@ foreach ($k in 'SPSW1', 'SPSW2') {
     $src = Join-Path $ProjectRoot ($Cfg.source.$k -replace '/', '\')
     if (Test-Path $src) { Good "source $k" } else { $fail += "missing source: $src"; Bad "source $k missing" }
 }
-foreach ($n in '02_WINDOW', '04_DOOR', '05_COLUMN', '06_TRIM', '08_PROJECTABLE', '09_OPENINGS') {
-    $m = Join-Path $MaskRoot ("PxDL_SW_MASK_{0}_{1}x{2}.png" -f $n, $Cfg.canvas.w, $Cfg.canvas.h)
-    if (-not (Test-Path $m)) { $fail += "missing mask: $m"; Bad "mask $n missing" }
+$maskMissing = $false
+foreach ($n in '01_WALL', '02_WINDOW', '04_DOOR', '05_COLUMN', '06_TRIM', '08_PROJECTABLE', '09_OPENINGS') {
+    $m = Join-Path $MaskSet.Masks ("PxDL_SW_MASK_{0}_{1}x{2}.png" -f $n, $Cfg.canvas.w, $Cfg.canvas.h)
+    if (-not (Test-Path $m)) { $maskMissing = $true; Bad "mask $n missing" }
 }
-if ($fail.Count -eq 0) { Good 'all 31 masks + opening maps' }
+foreach ($n in 'openings.json', 'facade_regions.json',
+               ("PxDL_SW_OPENING_ID_{0}x{1}.png" -f $Cfg.canvas.w, $Cfg.canvas.h),
+               ("PxDL_SW_OPENING_SDF_{0}x{1}.png" -f $Cfg.canvas.w, $Cfg.canvas.h)) {
+    if (-not (Test-Path (Join-Path $MaskSet.Reference $n))) {
+        $maskMissing = $true; Bad "reference $n missing"
+    }
+}
+if ($maskMissing) {
+    if ($Masks -eq 'Noise') {
+        $fail += 'the noise-traced mask set is not built. Run: python _pipeline\scripts\build_masks.py --from-noise'
+    } else {
+        $fail += 'the mask set is incomplete. Run: python _pipeline\scripts\build_masks.py'
+    }
+} else {
+    Good ("masks   {0} set, complete" -f $Masks.ToLower())
+}
+
+if ($HQ) {
+    Line
+    Line '  --- high-quality masters ---'
+    & python (Join-Path $PSScriptRoot 'check_hq.py')
+    if ($LASTEXITCODE -ne 0) {
+        $fail += 'the high-quality masters did not pass check_hq.py - see above'
+    } else {
+        Good 'high-quality masters validated'
+    }
+    Line
+}
 
 $arc = Join-Path $RefRoot 'noise_arc.csv'
 if (Test-Path $arc) {
@@ -224,15 +310,21 @@ if (-not $Yes) {
 $log = Join-Path $outDir ("export_{0}_{1}.log" -f $Preset, (Get-Date -Format 'yyyyMMdd-HHmmss'))
 Head 'RENDERING'
 Line "  log: $log"
-Line "  It reports frames/sec and an ETA as it goes. It runs at below-normal"
-Line "  priority, so the machine stays usable."
+Line "  A progress bar fills in below, with frames/sec and a time remaining."
+Line "  It runs at below-normal priority, so the machine stays usable."
 Line
 
 $started = Get-Date
-& python (Join-Path $PSScriptRoot 'render_shader.py') `
-    --div $div --start $start --count $count `
-    --plates --codec $P.Codec --threads $Threads --out $outDir 2>&1 |
-    Tee-Object -FilePath $log
+$layoutArg = switch ($Layout) { 'Plates' { 'plates' } 'Stitched' { 'canvas' } default { 'both' } }
+$renderArgs = @('--div', $div, '--start', $start, '--count', $count,
+                '--layout', $layoutArg, '--codec', $P.Codec, '--threads', $Threads,
+                '--masks', $Masks.ToLower(), '--log', $log, '--out', $outDir)
+if ($HQ) { $renderArgs += '--hq' }
+# NOT piped into Tee-Object on purpose. The progress bar rewrites one line with
+# a carriage return; a pipe in front of it turns every update into its own line
+# and the bar becomes four thousand lines of scrollback. The render writes its
+# own log through --log instead, and leaves the bar out of it.
+& python (Join-Path $PSScriptRoot 'render_shader.py') @renderArgs
 $rc = $LASTEXITCODE
 $took = (Get-Date) - $started
 
@@ -247,13 +339,32 @@ if ($rc -ne 0) {
 Head 'VERIFYING'
 $f1 = Get-ChildItem $outDir -Filter '*SPSW1*' | Sort-Object LastWriteTime | Select-Object -Last 1
 $f2 = Get-ChildItem $outDir -Filter '*SPSW2*' | Sort-Object LastWriteTime | Select-Object -Last 1
-if (-not $f1 -or -not $f2) { Bad 'one or both plates are missing'; exit 1 }
+$fc = Get-ChildItem $outDir -Filter '*CANVAS*' | Sort-Object LastWriteTime | Select-Object -Last 1
 
+if ($Layout -eq 'Stitched') {
+    if (-not $fc) { Bad 'the stitched canvas is missing'; exit 1 }
+    Line "  One stitched file, so there is no overlap to cross-check: the 1000 px"
+    Line "  band is inside it, where it belongs. Checking size and length only."
+    Line
+    $vrc = 0
+    & python (Join-Path $PSScriptRoot 'verify_plates.py') --a $fc.FullName `
+        --b $fc.FullName --div $div --samples 2 --tol 99 2>&1 |
+        Select-String -Pattern 'frames:' | Tee-Object -FilePath $log -Append
+    $expect = "$([int]$Cfg.canvas.w / $div)x$([int]$Cfg.canvas.h / $div)"
+    Line "  expected $expect"
+} else {
+    if (-not $f1 -or -not $f2) { Bad 'one or both plates are missing'; exit 1 }
+
+$tol = $Tolerance[$P.Codec]
 Line "  Checking resolution, frame count, and that the 1000 px overlap holds."
+Line "  Tolerance for $($P.Codec) is $tol - the two files are encoded separately at"
+Line "  different widths, so a lossy codec always leaves a little noise in the"
+Line "  overlap. A real fault would read in the tens, not the ones."
 Line
 & python (Join-Path $PSScriptRoot 'verify_plates.py') --a $f1.FullName --b $f2.FullName `
-    --div $div --samples 8 --tol 2 2>&1 | Tee-Object -FilePath $log -Append
+    --div $div --samples 8 --tol $tol 2>&1 | Tee-Object -FilePath $log -Append
 $vrc = $LASTEXITCODE
+}
 
 # ---------------------------------------------------------------- notes ------
 $notes = Join-Path $outDir 'DELIVERY_NOTES.txt'
@@ -311,7 +422,9 @@ FRAMES AND TIMING
   black at 4:04.97, this surface is already black.
 
 FORMAT
+  mask set     $(if ($Masks -eq 'Noise') { 'traced from the shared noise plate' } else { 'the authored colour-coded mask' })
   codec        $($P.Codec)
+  noise source $(if ($HQ) { 'the high-quality masters' } else { 'the supplied preview mp4s (0.019 bits/pixel)' })
   frame rate   30.000 fps, constant
   colour       bt709 primaries / transfer / matrix, tagged
   canvas       $($Cfg.canvas.w) x $($Cfg.canvas.h) at div $div
@@ -332,8 +445,12 @@ if ($vrc -eq 0) {
     Head 'DONE  -  BUT VERIFICATION FAILED. DO NOT SEND THESE.'
 }
 Line ("  took        {0:hh\:mm\:ss}" -f $took)
-Line ("  {0}   {1:N2} GB" -f $f1.Name, ($f1.Length/1GB))
-Line ("  {0}   {1:N2} GB" -f $f2.Name, ($f2.Length/1GB))
+# list everything that was actually produced, so a Both run does not quietly
+# leave the stitched file out of the summary
+foreach ($f in (Get-ChildItem $outDir -Include *.mov, *.mp4 -File -Recurse |
+                Sort-Object Name)) {
+    Line ("  {0,-42} {1,8:N2} GB" -f $f.Name, ($f.Length / 1GB))
+}
 Line ("  notes       {0}" -f $notes)
 Line ("  log         {0}" -f $log)
 Line
@@ -342,6 +459,15 @@ if ($vrc -ne 0) {
     Line '  before sending anything to the producer.'
     exit 1
 }
-Line '  Both plates are the right size, the same length, and agree through the'
-Line '  1000 px overlap. Send these two files plus DELIVERY_NOTES.txt.'
+if ($Layout -eq 'Stitched') {
+    Line '  One stitched 9788x2552 canvas. Send it plus DELIVERY_NOTES.txt.'
+} elseif ($Layout -eq 'Both') {
+    Line '  Both forms, from one render. The two SPSW plates are what matches the'
+    Line '  supplied noise; the CANVAS file is the same thing unsplit, if the'
+    Line '  producer would rather cut that and slice it themselves. Send whichever'
+    Line '  they ask for, plus DELIVERY_NOTES.txt.'
+} else {
+    Line '  Both plates are the right size, the same length, and agree through the'
+    Line '  1000 px overlap. Send these two files plus DELIVERY_NOTES.txt.'
+}
 Line

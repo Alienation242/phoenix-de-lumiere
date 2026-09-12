@@ -42,10 +42,12 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import CFG, MASK_ROOT, REF_ROOT, ffmpeg, source  # noqa: E402
+from _common import (CFG, MASK_ROOT, REF_ROOT, ffmpeg, mask_dirs,  # noqa: E402
+                     source)
 
 W = CFG["canvas"]["w"]
 H = CFG["canvas"]["h"]
+SCALE = 1.0          # canvas px per working px; the tracer measures in canvas px
 
 NAMES = ["WALL", "WINDOW", "BASE", "NOMAP", "DOOR", "COLUMN", "TRIM", "TEXT"]
 PAL = np.array([(21, 145, 52), (33, 149, 221), (221, 33, 168), (0, 0, 0),
@@ -313,16 +315,339 @@ def approx_sdf(binary, div=2, iters=140):
     return big
 
 
+# =========================================================================
+# TRACING THE FACADE OUT OF THE NOISE PLATE
+#
+# The shared noise plate is not a flat field: the windows, doors and columns are
+# drawn into it, each with a thin border. The authored colour mask describes the
+# same architecture - but the two do not agree everywhere. Measured against the
+# plate, the authored openings sit an average of 4.5 px off and the worst is 24.
+#
+# That matters now that the plate DRIVES the shaders rather than sitting behind
+# them: an oil field 12 px wider than the window it belongs to spills a rim of
+# colour onto the masonry, and an object clipped to its opening crosses a wall
+# that is not where the plate says the wall is.
+#
+# So this builds a second mask set out of the plate itself. It does NOT try to
+# guess what each shape means - the labels still come from the authored mask,
+# which is the only thing that knows a door from a window. What it does is move
+# every boundary onto the border the plate actually draws.
+# =========================================================================
+
+def box_blur(a, r):
+    """Separable box blur via a summed-area table."""
+    p = np.pad(a, ((r, r), (r, r)), mode="edge")
+    c = np.cumsum(np.cumsum(p, 0), 1)
+    c = np.pad(c, ((1, 0), (1, 0)))
+    k = 2 * r + 1
+    return (c[k:, k:] - c[:-k, k:] - c[k:, :-k] + c[:-k, :-k]) / float(k * k)
+
+
+def grad_mag(a):
+    gx = np.zeros_like(a)
+    gy = np.zeros_like(a)
+    gx[:, 1:-1] = a[:, 2:] - a[:, :-2]
+    gy[1:-1, :] = a[2:, :] - a[:-2, :]
+    return np.sqrt(gx * gx + gy * gy)
+
+
+def dist_from(mask, cap):
+    """Distance in pixels from the nearest True pixel, capped. Chamfer, iterated."""
+    d = np.where(mask, np.float32(0.0), np.float32(cap + 2))
+    for _ in range(int(cap) + 2):
+        c = d.copy()
+        c[1:, :] = np.minimum(c[1:, :], d[:-1, :] + 1.0)
+        c[:-1, :] = np.minimum(c[:-1, :], d[1:, :] + 1.0)
+        c[:, 1:] = np.minimum(c[:, 1:], d[:, :-1] + 1.0)
+        c[:, :-1] = np.minimum(c[:, :-1], d[:, 1:] + 1.0)
+        c[1:, 1:] = np.minimum(c[1:, 1:], d[:-1, :-1] + 1.4142)
+        c[:-1, :-1] = np.minimum(c[:-1, :-1], d[1:, 1:] + 1.4142)
+        c[1:, :-1] = np.minimum(c[1:, :-1], d[:-1, 1:] + 1.4142)
+        c[:-1, 1:] = np.minimum(c[:-1, 1:], d[1:, :-1] + 1.4142)
+        if np.array_equal(c, d):
+            break
+        d = c
+    return d
+
+
+def label_edges(lab):
+    """Pixels sitting on a boundary between two different labels."""
+    e = np.zeros(lab.shape, bool)
+    e[:, 1:] |= lab[:, 1:] != lab[:, :-1]
+    e[:, :-1] |= lab[:, 1:] != lab[:, :-1]
+    e[1:, :] |= lab[1:, :] != lab[:-1, :]
+    e[:-1, :] |= lab[1:, :] != lab[:-1, :]
+    return e
+
+
+def plate_borders(static, hi_pct=99.0, lo_pct=90.0, min_len=120.0, close=2.0):
+    """The border lines the plate draws around its own architecture.
+
+    Two things make this harder than "threshold the gradient".
+
+    The plate's own cloud texture is just as strong as the architecture, but
+    BLOBBY. The architecture is drawn as long thin lines, so anything that does
+    not run for at least min_len px is thrown away. That one filter is the
+    difference between snapping to a window edge and snapping to a smudge 20 px
+    inside it.
+
+    And the edges are not all equally strong. The top of a window is a 13/255
+    step against the sky; the BOTTOM of the same window is 8/255 against the
+    masonry below it. One threshold either catches the bottom edge and half the
+    clouds with it, or catches neither. So it is hysteresis, as in Canny: a
+    strong threshold decides where an edge definitely is, a much weaker one
+    decides how far it runs, and only pieces containing a strong pixel survive.
+    Without it the bottom edges break into a dozen fragments, each too short to
+    keep - and a window with no bottom edge leaks out of its own corners.
+    """
+    g = grad_mag(box_blur(static, max(1, int(round(6.0 / SCALE)))))
+    strong = g > np.percentile(g, hi_pct)
+    lbl = components(g > np.percentile(g, lo_pct))
+    if not lbl.any():
+        return np.zeros(static.shape, bool), 0, 0
+    ids = np.unique(lbl[lbl > 0])
+    ys, xs = np.where(lbl > 0)
+    v = lbl[ys, xs]
+    o = np.argsort(v, kind="stable")
+    ys, xs, v = ys[o], xs[o], v[o]
+    lo = np.searchsorted(v, ids)
+    hi = np.searchsorted(v, ids, side="right")
+    keep = np.zeros(int(lbl.max()) + 1, bool)
+    want = int(round(min_len / SCALE))
+    for i, a0, a1 in zip(ids, lo, hi):
+        yy, xx = ys[a0:a1], xs[a0:a1]
+        if (a1 - a0) < want:
+            continue
+        if max(xx.max() - xx.min(), yy.max() - yy.min()) < want:
+            continue
+        if not strong[yy, xx].any():
+            continue
+        keep[i] = True
+    border = keep[lbl]
+    if close:
+        border = dilate(border, max(1, int(round(close / SCALE))))
+    return border, len(ids), int(keep.sum())
+
+
+def grow_labels(field, blocked, rounds):
+    """Flood every known label outward a pixel at a time, never entering
+    `blocked`. Two fronts meeting at a border both stop on it, which is the
+    whole point: that is where the new boundary ends up.
+    """
+    unknown = field == 255
+    for _ in range(rounds):
+        if not unknown.any():
+            break
+        cand = np.full(field.shape, 255, np.uint8)
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            sh = np.roll(field, (dy, dx), (0, 1))
+            if dy == 1:
+                sh[0] = 255
+            elif dy == -1:
+                sh[-1] = 255
+            if dx == 1:
+                sh[:, 0] = 255
+            elif dx == -1:
+                sh[:, -1] = 255
+            take = unknown & (cand == 255) & (sh != 255)
+            cand[take] = sh[take]
+        got = unknown & (cand != 255) & ~blocked
+        if not got.any():
+            break
+        field[got] = cand[got]
+        unknown &= ~got
+    return field
+
+
+def trace_from_noise(lab, static, reach=44.0, smooth=4.0):
+    """Move every boundary in `lab` onto the border the plate draws.
+
+    Each region keeps a core of itself as a seed: everything further than
+    `reach` from its own boundary, PLUS its medial axis - so a 30 px mullion
+    between two windows still seeds and the two windows cannot merge into one.
+    Everything between the cores is then re-grown, blocked by the plate's border
+    lines, so a boundary with a border near it lands on that border, and a
+    boundary with none (wall against ground, say) meets in the middle, exactly
+    where it already was.
+    """
+    h, w = lab.shape
+    border, n_all, n_kept = plate_borders(static)
+    print("   border lines   %d ridge pieces, %d long enough to be architecture"
+          % (n_all, n_kept))
+    print("                  %.2f %% of the canvas" % (100.0 * border.mean()))
+
+    reach_px = max(2, int(round(reach / SCALE)))
+    d = dist_from(label_edges(lab), reach_px)
+    nb = d.copy()
+    nb[1:, :] = np.maximum(nb[1:, :], d[:-1, :])
+    nb[:-1, :] = np.maximum(nb[:-1, :], d[1:, :])
+    nb[:, 1:] = np.maximum(nb[:, 1:], d[:, :-1])
+    nb[:, :-1] = np.maximum(nb[:, :-1], d[:, 1:])
+    core = (d > reach_px) | ((d >= 1.0) & (d >= nb))
+
+    field = np.full((h, w), 255, np.uint8)
+    field[core] = lab[core]
+    print("   seeds          %.1f %% of the canvas kept as known ground"
+          % (100.0 * core.mean()))
+
+    field = grow_labels(field, border, reach_px + 8)
+    stuck = int((field == 255).sum())
+    field = grow_labels(field, np.zeros((h, w), bool), 4 * reach_px + 64)
+    if (field == 255).any():
+        sys.exit("the trace did not close: %d px never got a label"
+                 % (field == 255).sum())
+    print("   grown          %d px sat on a border line and were split down it"
+          % stuck)
+
+    if smooth:
+        # Growing a boundary one pixel at a time leaves a staircase on it. A
+        # majority vote in a small window takes the staircase off without
+        # moving the boundary anywhere.
+        r = max(1, int(round(smooth / SCALE)))
+        best = np.zeros((h, w), np.float32)
+        out = field.copy()
+        for idx in range(len(NAMES)):
+            if not (field == idx).any():
+                continue
+            c = box_blur((field == idx).astype(np.float32), r).astype(np.float32)
+            t = c > best
+            out[t] = idx
+            best[t] = c[t]
+        field = out
+
+    print("   result         %.2f %% of the canvas changed label"
+          % (float((field != lab).mean()) * 100.0))
+    print()
+    print("   %-8s %10s %10s %9s" % ("region", "authored", "traced", "change"))
+    for idx in (WALL, WINDOW, BASE, NOMAP, DOOR, COLUMN, TRIM):
+        a = int((lab == idx).sum())
+        b = int((field == idx).sum())
+        if not a:
+            continue
+        print("   %-8s %10d %10d %+8.1f %%"
+              % (NAMES[idx], a, b, (b / float(a) - 1) * 100))
+    return field
+
+
+def static_plate(frames, use_hq, cache):
+    """Whatever is STANDING STILL in the noise plate.
+
+    Averaging a few hundred frames spread across the whole loop cancels the
+    dither and leaves the architecture, which is the thing being traced. Frames
+    where the plate has already cut to black contribute nothing but darkness,
+    so they are skipped.
+    """
+    if os.path.isfile(cache):
+        raw = subprocess.run([FF, "-hide_banner", "-loglevel", "error", "-i", cache,
+                              "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1"],
+                             capture_output=True).stdout
+        if len(raw) >= W * H:
+            print("   reusing %s  (delete it to measure again)"
+                  % os.path.basename(cache))
+            return np.frombuffer(raw[:W * H], np.uint8).reshape(H, W).astype(np.float32)
+        print("   %s is unreadable, measuring again" % os.path.basename(cache))
+
+    hq = CFG.get("source_hq", {}) if use_hq else {}
+    stitched = hq.get("STITCHED") or None
+    if use_hq and not stitched and not (hq.get("SPSW1") and hq.get("SPSW2")):
+        sys.exit("--hq needs source_hq.STITCHED, or both source_hq.SPSW1 and SPSW2")
+    p1, p2 = CFG["plates"]
+    step = max(1, CFG["loop_frames"] // max(frames, 1))
+
+    if stitched:
+        print("   source: one stitched master, %s" % os.path.basename(stitched))
+        cmd = [FF, "-hide_banner", "-loglevel", "error", "-i", stitched,
+               "-vf", "scale=%d:%d:flags=area,format=gray,select=not(mod(n\\,%d))"
+                      % (W, H, step)]
+    else:
+        v1 = hq["SPSW1"] if use_hq else source("SPSW1")
+        v2 = hq["SPSW2"] if use_hq else source("SPSW2")
+        print("   source: the two plates, %s + %s"
+              % (os.path.basename(v1), os.path.basename(v2)))
+        fc = ("[0:v]scale=%d:%d:flags=area,crop=%d:%d:0:0[l];"
+              "[1:v]scale=%d:%d:flags=area[r];[l][r]hstack=2,format=gray,"
+              "select=not(mod(n\\,%d))"
+              % (p1["w"], H, p2["x"], H, p2["w"], H, step))
+        cmd = [FF, "-hide_banner", "-loglevel", "error", "-i", v1, "-i", v2,
+               "-filter_complex", fc]
+    cmd += ["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]
+
+    acc = np.zeros((H, W), np.float64)
+    got = skipped = 0
+    pr = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=W * H * 2)
+    t0 = time.time()
+    while got < frames:
+        buf = pr.stdout.read(W * H)
+        if len(buf) < W * H:
+            break
+        f = np.frombuffer(buf, np.uint8).reshape(H, W)
+        if f.mean() < 8.0:                 # the plate has cut to black here
+            skipped += 1
+            continue
+        acc += f
+        got += 1
+        if got % 10 == 0:
+            sys.stdout.write("\r   averaging %d frames ... %d" % (frames, got))
+            sys.stdout.flush()
+    try:
+        pr.kill()
+    except Exception:
+        pass
+    sys.stdout.write("\r" + " " * 44 + "\r")
+    if got < 8:
+        sys.exit("only %d usable frames came out of the plate - is the source right?"
+                 % got)
+    avg = acc / got
+    print("   averaged %d frames (%d skipped as black) in %.0f s, mean %.1f"
+          % (got, skipped, time.time() - t0, avg.mean()))
+    write_png(np.clip(avg, 0, 255).astype(np.uint8), cache, "gray")
+    print("   wrote %s" % os.path.basename(cache))
+    return avg.astype(np.float32)
+
+
 def main():
+    global MASK_ROOT, REF_ROOT
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-extras", action="store_true",
                     help="skip the opening ID map and SDF (much faster)")
+    ap.add_argument("--from-noise", action="store_true",
+                    help="trace the facade out of the shared noise plate instead "
+                         "of taking the authored boundaries at face value. The "
+                         "labels still come from the authored mask - only the "
+                         "boundaries move. Writes a SECOND, complete mask set "
+                         "into masks_noise/ and reference_noise/, so both exist "
+                         "side by side and nothing is overwritten")
+    ap.add_argument("--frames", type=int, default=180,
+                    help="--from-noise: how many frames to average to find what "
+                         "stands still in the plate. More is steadier and slower")
+    ap.add_argument("--hq", action="store_true",
+                    help="--from-noise: trace the high-quality masters in "
+                         "source_hq rather than the preview mp4s")
+    ap.add_argument("--reach", type=float, default=44.0,
+                    help="--from-noise: how far a boundary is allowed to move, "
+                         "in canvas px. The worst authored opening is 24 px out")
     a = ap.parse_args()
+
+    if a.from_noise:
+        MASK_ROOT, REF_ROOT = mask_dirs("noise")
+        print("TRACING THE FACADE OUT OF THE NOISE PLATE")
+        print("  masks     -> %s" % MASK_ROOT)
+        print("  reference -> %s" % REF_ROOT)
+        print("  The authored set in masks/ is not touched.")
+        print()
 
     print("classifying mask ...")
     lab, dmin = classify()
     print("removing burned-in annotation text ...")
     lab = remove_text(lab, dmin)
+
+    if a.from_noise:
+        print("\nfinding what stands still in the plate ...")
+        os.makedirs(REF_ROOT, exist_ok=True)
+        static = static_plate(a.frames, a.hq, os.path.join(
+            REF_ROOT, "PxDL_SW_NOISE_STATIC_%dx%d.png" % (W, H)))
+        print("\ntracing ...")
+        lab = trace_from_noise(lab, static, reach=a.reach)
 
     print("\nmattes -> %s" % MASK_ROOT)
     for name, ids in GROUPS.items():
