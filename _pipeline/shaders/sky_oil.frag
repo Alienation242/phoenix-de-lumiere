@@ -74,6 +74,10 @@ uniform float uBevel;         // bevel width, as a fraction of one pane
 uniform float uBevelDepth;    // how far the bevel tips the normal
 uniform float uMullion;       // bar width, as a fraction of one pane
 uniform float uMullionDark;   // how much the bars take out of the glass
+uniform float uArchUp;        // how much of an UPPER window is arch head, 0..1
+uniform float uArchLow;       // the same for a lower window. ~0: no fanlight
+uniform float uFanArc;        // the fanlight's inner arc, as a fraction of the
+                              // head radius
 uniform float uFilmMin;
 uniform float uFilmMax;
 uniform float uLevels;
@@ -109,23 +113,81 @@ float rel(float x) {
 // view vector out of the opening's UV, and adding the tilt into that is what
 // makes each pane catch the interference colours at its own angle. That is the
 // bevel - not a painted highlight, an actual change of surface direction.
-void paneGrid(vec2 ouv, float rows, out vec2 tilt, out float bar) {
+// The arch head of an upper window is a FANLIGHT, not more grid: a concentric
+// inner arc, the centre mullion carried up to the apex, and one spoke into each
+// spandrel. Straight off the photograph of the venue wall - guessing it as
+// four more grid squares under a curve was wrong, and it was the first thing
+// the real window disagreed with.
+//
+// Head space: x runs -1..1 across the opening, y 0 at the springing line and 1
+// at the apex, so r = 1 is the arch itself and the geometry is the same for
+// every window whatever its size.
+void fanLight(vec2 ouv, float archFrac, out vec2 tilt, out float bar) {
+    tilt = vec2(0.0);
+    bar = 0.0;
+    float hx = ouv.x * 2.0 - 1.0;
+    float hy = 1.0 - clamp(ouv.y / max(archFrac, 1e-4), 0.0, 1.0);
+    float r = length(vec2(hx, hy));
+    float ang = atan(max(hy, 0.0), hx);        // 0 right, PI/2 up, PI left
+
+    // bar half-width, converted from "fraction of a pane" into head units so a
+    // fanlight bar is the same thickness on the wall as a grid bar
+    float w = max(uMullion / max(uPaneCols, 1.0), 1e-4);
+
+    float dArc = abs(r - uFanArc);
+    float dMid = (r > uFanArc) ? abs(hx) : 1e3;
+    float dSpk = 1e3;
+    if (r > uFanArc) {
+        // 0.7853982 = PI/4, 2.3561945 = 3PI/4. Multiplying by r turns the
+        // angular gap into a real distance, so a spoke keeps its width.
+        dSpk = min(abs(ang - 0.7853982), abs(ang - 2.3561945)) * r;
+    }
+    float d = min(dArc, min(dMid, dSpk));
+
+    bar = (1.0 - smoothstep(w * 0.55, w, d)) * uPanes;
+    // The chamfer falls away from whichever bar is nearest. Radially is close
+    // enough at this size, and it is the arc that carries the read.
+    float ch = (1.0 - smoothstep(0.0, max(uBevel / max(uPaneCols, 1.0), 1e-4), d))
+             * uBevelDepth * uPanes;
+    vec2 rad = normalize(vec2(hx, -hy) + vec2(1e-5));
+    tilt = rad * ch * sign(uFanArc - r);
+}
+
+// The leaded grid inside one opening. openUV is already 0..1 across THIS
+// opening whatever size it is, so the same call lands the grid correctly on
+// every window without knowing anything about where it sits on the wall.
+//
+// It returns a TILT rather than a full normal: the oil below already builds a
+// view vector out of the opening's UV, and adding the tilt into that is what
+// makes each pane catch the interference colours at its own angle. That is the
+// bevel - not a painted highlight, an actual change of surface direction.
+//
+// The chamfer tips TOWARD each pane's centre, because the panes on the real
+// wall are recessed and the bars stand at the wall plane. A negative
+// --bevel-depth turns them back into raised panels.
+void paneGrid(vec2 ouv, float rows, float archFrac, out vec2 tilt, out float bar) {
     tilt = vec2(0.0);
     bar = 0.0;
     if (uPanes <= 0.0 || uPaneCols < 1.0 || rows < 1.0) return;
 
-    vec2 c = fract(ouv * vec2(uPaneCols, rows));
+    // Above the springing line is the head. The grid gets the rectangular part
+    // ONLY - rows counted from the springing down, which is how the window was
+    // built and how it was counted off the photograph.
+    if (archFrac > 0.001) {
+        if (ouv.y < archFrac) { fanLight(ouv, archFrac, tilt, bar); return; }
+        ouv.y = (ouv.y - archFrac) / max(1.0 - archFrac, 1e-4);
+    }
+
+    vec2 c = fract(vec2(ouv.x * uPaneCols, ouv.y * rows));
     vec2 e = min(c, 1.0 - c);            // distance to this pane's own edges
     float d = min(e.x, e.y);
 
     // the separation between panes sits on the join
     bar = 1.0 - smoothstep(uMullion * 0.55, uMullion, d);
 
-    // and the glass is chamfered for the last uBevel of each pane, tipping
-    // AWAY from the pane's centre so it reads as raised glass in a frame
     float bx = 1.0 - smoothstep(0.0, max(uBevel, 1e-4), e.x);
     float by = 1.0 - smoothstep(0.0, max(uBevel, 1e-4), e.y);
-    tilt = vec2(bx * sign(c.x - 0.5), by * sign(c.y - 0.5)) * uBevelDepth;
+    tilt = vec2(bx * sign(0.5 - c.x), by * sign(0.5 - c.y)) * uBevelDepth;
     tilt *= uPanes;
     bar  *= uPanes;
 }
@@ -187,8 +249,9 @@ void main() {
     // the mattes are numbered upper windows first, then lower, then doors, so
     // one threshold separates them without a second texture.
     vec2 paneTilt; float paneBar;
-    paneGrid(openUV, (openIdx > uPaneSplit) ? uPaneRowsLow : uPaneRowsUp,
-             paneTilt, paneBar);
+    bool isLow = (openIdx > uPaneSplit);
+    paneGrid(openUV, isLow ? uPaneRowsLow : uPaneRowsUp,
+             isLow ? uArchLow : uArchUp, paneTilt, paneBar);
     lo += paneTilt;
     vec3 odir  = normalize(vec3(lo.x, lo.y, 1.0));
     vec3 onrm  = -odir;

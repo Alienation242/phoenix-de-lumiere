@@ -109,15 +109,21 @@ GROUPS = [
         ("pane_cols", "int", 1, 10, 1,
          "panes across an opening. 4, off the sketch of the real building"),
         ("pane_rows_upper", "int", 1, 14, 1,
-         "rows in an upper window. 6 makes the panes square (4 % out); the "
-         "sketch drew 4, which would be 44 % out"),
+         "rows in an upper window, from the springing line down. 6, counted "
+         "off the venue photograph"),
         ("pane_rows_lower", "int", 1, 16, 1,
          "rows in a lower window. 8 lands 8 % off square"),
+        ("arch_upper", "float", 0.0, 0.5, 0.005,
+         "how much of an upper window is arch head. Above that line it is a "
+         "fanlight - inner arc, centre mullion, a spoke each side"),
+        ("fan_arc", "float", 0.1, 0.95, 0.01,
+         "the fanlight's inner arc, as a fraction of the head radius"),
         ("bevel", "float", 0.0, 0.45, 0.01,
          "chamfer round each pane, as a fraction of the pane"),
-        ("bevel_depth", "float", 0.0, 2.0, 0.05,
+        ("bevel_depth", "float", -2.0, 2.0, 0.05,
          "how far the chamfer tips the glass - each pane then catches the "
-         "interference colours at its own angle"),
+         "interference colours at its own angle. Positive is recessed, like "
+         "the real wall; negative raises the panes instead"),
         ("mullion", "float", 0.0, 0.25, 0.005,
          "the separation between panes, as a fraction of a pane"),
         ("mullion_dark", "float", 0.0, 1.0, 0.02,

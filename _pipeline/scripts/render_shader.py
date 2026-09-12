@@ -1319,10 +1319,24 @@ def main():
     ap.add_argument("--pane-cols", type=float, default=4.0,
                     help="panes across an opening, both window types")
     ap.add_argument("--pane-rows-upper", type=float, default=6.0,
-                    help="rows in an upper window. 6 is what makes the panes "
-                         "square; the sketch drew 4")
+                    help="rows in an upper window, counted from the springing "
+                         "line down. 6, counted off the photograph of the "
+                         "venue wall - which is also what square panes "
+                         "predicted, and not what the sketch drew")
     ap.add_argument("--pane-rows-lower", type=float, default=8.0,
                     help="rows in a lower window")
+    ap.add_argument("--arch-upper", type=float, default=0.232,
+                    help="how much of an upper window's height is arch head. "
+                         "Measured off the mattes: 144 px of rise on a 620 px "
+                         "opening. Above this line the head is a FANLIGHT, not "
+                         "more grid - which is what the venue photograph shows")
+    ap.add_argument("--arch-lower", type=float, default=0.0,
+                    help="the same for a lower window. 0 because their arch is "
+                         "segmental - 46 px on 1147 - and the grid simply runs "
+                         "under it, top row curved, as on the real wall")
+    ap.add_argument("--fan-arc", type=float, default=0.55,
+                    help="the fanlight's inner arc, as a fraction of the head "
+                         "radius")
     ap.add_argument("--pane-split", type=float, default=18.5,
                     help="opening index above which an opening counts as a "
                          "LOWER window. The mattes are numbered upper first "
@@ -1949,6 +1963,9 @@ def main():
         setu(bg_prog, "uBevelDepth", a.bevel_depth)
         setu(bg_prog, "uMullion", a.mullion)
         setu(bg_prog, "uMullionDark", a.mullion_dark)
+        setu(bg_prog, "uArchUp", a.arch_upper)
+        setu(bg_prog, "uArchLow", a.arch_lower)
+        setu(bg_prog, "uFanArc", a.fan_arc)
         setu(bg_prog, "uColor", tuple(col))
         setu(bg_prog, "uLevels", a.levels)
         # uGrid is the dither cell in RENDER pixels, so it must NOT track --div.
