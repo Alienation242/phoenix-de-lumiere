@@ -4,7 +4,7 @@ Content for one surface of a twelve-surface projection mapping inside a
 62 × 38 m exhibition hall. This repo holds the **SW wall**: the 2:40–4:00 slice
 of a ten-minute, 30 fps loop, delivered as two video plates.
 
-![canvas layout](_pipeline/reference/canvas_layout.png)
+![canvas layout](RawNoise/title.png)
 
 Everything here was derived by measuring the supplied files rather than assuming.
 
