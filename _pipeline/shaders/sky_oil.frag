@@ -56,6 +56,7 @@ uniform float uSpread;
 uniform float uSkyGain;
 uniform float uOilGain;
 uniform float uOilSweep;
+uniform float uOilBleed;      // 0 = oil lives in the openings, 1 = everywhere
 uniform float uFilmMin;
 uniform float uFilmMax;
 uniform float uLevels;
@@ -152,7 +153,13 @@ void main() {
     vec3 oilColor = vec3(r, g, b) * uOilGain + (uColor * specular * 2.0);
     oilColor = oilColor / (oilColor + vec3(1.0));
 
-    float oilAmount = mWin * uSkyToOil * inOpen;
+    // uOilBleed lifts the oil OUT of the windows and across the whole wall.
+    // At 0 this line is exactly what it always was. At 1 the thin film covers
+    // everything the sky covers - and because the film's THICKNESS is driven by
+    // the plate's own luminance, the interference colours then follow the
+    // plate's patterns. That is the screen-tearing read: the noise wearing the
+    // oil's colours instead of the sky's.
+    float oilAmount = mix(mWin * inOpen, 1.0, uOilBleed) * uSkyToOil;
     vec3 col = mix(sky, oilColor, oilAmount);
 
     // ---- doors: a way out, not a pane of oil -------------------------------

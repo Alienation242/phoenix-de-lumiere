@@ -91,6 +91,10 @@ GROUPS = [
     ]),
     ("Oil in the windows", [
         ("oil_gain", "float", 0.0, 15.0, 0.1, "oil intensity before tonemapping"),
+        ("oil_bleed", "float", 0.0, 1.0, 0.01,
+         "lift the oil OUT of the windows and across the whole wall. 0 is "
+         "the openings only; 1 covers everything, and the plate's patterns "
+         "then carry the interference colours - a screen tearing"),
         ("oil_sweep", "float", 0.0, 1.0, 0.01,
          "per-opening view-angle swing. above ~0.8 the film goes white at the "
          "opening edges"),

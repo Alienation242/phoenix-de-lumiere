@@ -1084,6 +1084,14 @@ class Track(object):
             return self._out(ks[0][1])
         if frame >= ks[-1][0]:
             return self._out(ks[-1][1])
+        # Landing exactly ON a key gives that key's value. Without this the
+        # segment loop below matches the span ENDING at the key first - its
+        # condition is f0 <= frame <= f1 - and with 'hold' easing that returns
+        # the LEFT key, so a hard cut arrived one frame late. Invisible for a
+        # smooth track, and exactly wrong for the one thing hold exists to do.
+        for kf, kv, _ke in ks:
+            if frame == kf:
+                return self._out(kv)
         for i in range(len(ks) - 1):
             f0, v0, e0 = ks[i]
             f1, v1, _ = ks[i + 1]
@@ -1297,6 +1305,13 @@ def main():
                     help="how far the plate's own darkness is allowed to pull the "
                          "wall down. was 0.25, which crushed the quiet passages")
     ap.add_argument("--oil-gain", type=float, default=6.8)
+    ap.add_argument("--oil-bleed", type=float, default=0.0,
+                    help="lift the oil out of the windows and across the whole "
+                         "wall. 0 = the openings only, which is the look "
+                         "everywhere except the end. 1 = the thin film covers "
+                         "everything, and since the plate drives its thickness "
+                         "the interference colours follow the plate's own "
+                         "patterns - a screen tearing rather than a sky")
     ap.add_argument("--oil-sweep", type=float, default=0.55,
                     help="per-opening view-angle swing. above ~0.8 the film goes white at "
                          "the opening edges, which is the bug this replaced")
@@ -1887,6 +1902,7 @@ def main():
         setu(bg_prog, "uSpread", a.spread)
         setu(bg_prog, "uSkyGain", a.sky_gain)
         setu(bg_prog, "uOilGain", a.oil_gain)
+        setu(bg_prog, "uOilBleed", a.oil_bleed)
         setu(bg_prog, "uColor", tuple(col))
         setu(bg_prog, "uLevels", a.levels)
         # uGrid is the dither cell in RENDER pixels, so it must NOT track --div.
