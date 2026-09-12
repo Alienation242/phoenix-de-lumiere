@@ -98,11 +98,19 @@ def main():
     ap.add_argument("--b", required=True, help="%s: movie or printf sequence" % B_NAME)
     ap.add_argument("--start", type=int, default=None, help="first frame number of a sequence")
     ap.add_argument("--samples", type=int, default=8)
+    ap.add_argument("--div", type=int, default=1, choices=(1, 2, 4),
+                    help="the plates were rendered at 1/div. Everything here is "
+                         "geometry - expected sizes and where the overlap sits - so "
+                         "it all has to scale with it, or a perfectly good half-size "
+                         "review render is reported as the wrong resolution and the "
+                         "overlap is compared against the wrong columns")
     ap.add_argument("--tol", type=float, default=1.0,
                     help="max mean abs diff in the overlap, on a 0-255 scale (default 1.0)")
     a = ap.parse_args()
 
     ff = ffmpeg()
+    d = max(1, a.div)
+    ovx, ovw = OVERLAP_X // d, OVERLAP_W // d
     fails, dims = [], {}
 
     print()
@@ -110,11 +118,12 @@ def main():
         w, h = probe_size(ff, src, a.start)
         dims[key] = (w, h)
         p = plate(name)
-        ok = (w, h) == (p["w"], p["h"])
+        ew, eh = p["w"] // d, p["h"] // d
+        ok = (w, h) == (ew, eh)
         print("%-6s %-46s %5dx%-5d %s" % (name, os.path.basename(src), w, h,
-                                          "OK" if ok else "EXPECTED %dx%d" % (p["w"], p["h"])))
+                                          "OK" if ok else "EXPECTED %dx%d" % (ew, eh)))
         if not ok:
-            fails.append("%s is %dx%d, expected %dx%d" % (name, w, h, p["w"], p["h"]))
+            fails.append("%s is %dx%d, expected %dx%d" % (name, w, h, ew, eh))
 
     na = count_frames(ff, a.a, a.start)
     nb = count_frames(ff, a.b, a.start)
@@ -128,13 +137,14 @@ def main():
     fa = read_frames(ff, a.a, dims["a"][0], dims["a"][1], idxs, a.start)
     fb = read_frames(ff, a.b, dims["b"][0], dims["b"][1], idxs, a.start)
 
-    print("\noverlap check  (%s x %d..%d  vs  %s x 0..%d)"
-          % (A_NAME, OVERLAP_X, OVERLAP_X + OVERLAP_W, B_NAME, OVERLAP_W))
+    print("\noverlap check  (%s x %d..%d  vs  %s x 0..%d)%s"
+          % (A_NAME, ovx, ovx + ovw, B_NAME, ovw,
+             "" if d == 1 else "   [1/%d scale]" % d))
     print("  %-8s %12s %8s   %s" % ("frame", "mean|diff|", "max", "verdict"))
     worst = 0.0
     for i in range(min(len(fa), len(fb))):
-        x = fa[i][:, OVERLAP_X:OVERLAP_X + OVERLAP_W].astype(np.int32)
-        y = fb[i][:, :OVERLAP_W].astype(np.int32)
+        x = fa[i][:, ovx:ovx + ovw].astype(np.int32)
+        y = fb[i][:, :ovw].astype(np.int32)
         d = np.abs(x - y) / 257.0                      # report on a 0-255 scale
         md = float(d.mean())
         worst = max(worst, md)

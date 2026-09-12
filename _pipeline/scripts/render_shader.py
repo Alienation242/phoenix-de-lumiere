@@ -47,6 +47,21 @@ from _common import (CFG, MASK_ROOT, REF_ROOT, RENDER_ROOT, WORK_ROOT,  # noqa: 
                      ffmpeg, source)
 
 SHADERS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shaders")
+
+# Delivery codecs for --plates. yuv422p10le and yuv444p10le both subsample or
+# align on even widths, which is why --plates refuses --div 4: 3588/4 = 897 and
+# an odd-width plate cannot be encoded in any of these.
+CODECS = {
+    "prores4444":  dict(ext="mov", args=["-c:v", "prores_ks", "-profile:v", "4",
+                                         "-vendor", "apl0",
+                                         "-pix_fmt", "yuva444p10le"]),
+    "prores422hq": dict(ext="mov", args=["-c:v", "prores_ks", "-profile:v", "3",
+                                         "-vendor", "apl0", "-pix_fmt", "yuv422p10le"]),
+    "dnxhr_hqx":   dict(ext="mov", args=["-c:v", "dnxhd", "-profile:v", "dnxhr_hqx",
+                                         "-pix_fmt", "yuv422p10le"]),
+    "h264":        dict(ext="mp4", args=["-c:v", "libx264", "-crf", "16",
+                                         "-preset", "medium", "-pix_fmt", "yuv420p"]),
+}
 CW, CH = CFG["canvas"]["w"], CFG["canvas"]["h"]
 FPS = CFG["fps"]
 
@@ -943,6 +958,13 @@ def main():
     ap.add_argument("--start", type=int, default=None)
     ap.add_argument("--count", type=int, default=None)
     ap.add_argument("--png", action="store_true", help="write a PNG sequence (for delivery)")
+    ap.add_argument("--plates", action="store_true",
+                    help="write the TWO PROJECTOR PLATES directly, sliced from the same "
+                         "frame in memory. This is the delivery path: it needs no "
+                         "master sequence on disk, and the 1000 px overlap is identical "
+                         "in both plates by construction rather than by process")
+    ap.add_argument("--codec", default="prores422hq", choices=sorted(CODECS),
+                    help="codec for --plates")
     ap.add_argument("--mp4", action="store_true", help="write a preview MP4")
     ap.add_argument("--out", default="")
     ap.add_argument("--preview-width", type=int, default=0,
@@ -1310,7 +1332,35 @@ def main():
         stdout=subprocess.PIPE, bufsize=W * H * 3 * 2)
 
     # ---- output sink ------------------------------------------------------
-    if a.png:
+    sinks = []
+    if a.plates:
+        if a.div not in (1, 2):
+            sys.exit("--plates needs --div 1 or 2. At --div 4 the right plate is "
+                     "3588/4 = 897 px wide, and no delivery codec can encode an "
+                     "odd width.")
+        spec = CODECS[a.codec]
+        outdir = a.out or os.path.join(RENDER_ROOT, "deliver")
+        os.makedirs(outdir, exist_ok=True)
+        last = a.start + a.count - 1
+        for pl in CFG["plates"]:
+            x0 = pl["x"] // a.div
+            pw = pl["w"] // a.div
+            name = "PxDL_SW_%s_%05d-%05d.%s" % (pl["name"], a.start, last, spec["ext"])
+            path = os.path.join(outdir, name)
+            proc = popen_polite(
+                [ff, "-hide_banner", "-loglevel", "error", "-y",
+                 "-threads", str(a.threads),
+                 "-f", "rawvideo", "-pix_fmt", "rgb24",
+                 "-s", "%dx%d" % (pw, H), "-framerate", str(FPS), "-i", "pipe:0",
+                 "-r", str(FPS)] + spec["args"] +
+                ["-color_primaries", "bt709", "-color_trc", "bt709",
+                 "-colorspace", "bt709", path],
+                stdin=subprocess.PIPE)
+            sinks.append(dict(proc=proc, x0=x0, x1=x0 + pw, name=pl["name"], path=path))
+            print("plate     %-6s x %d..%d  ->  %dx%d  %s"
+                  % (pl["name"], pl["x"], pl["x"] + pl["w"], pw, H, name))
+        dst = outdir
+    elif a.png:
         outdir = a.out or os.path.join(RENDER_ROOT, "master_%dx%d" % (W, H))
         os.makedirs(outdir, exist_ok=True)
         dst = os.path.join(outdir, "PxDL_SW_master.%05d.png")
@@ -1341,11 +1391,13 @@ def main():
                        "-pix_fmt", "yuv420p"] if has264 else ["-c:v", "mpeg4", "-q:v", "3"])
         sink_args += [dst]
         print("out       %s" % dst)
-    sink = popen_polite(
-        [ff, "-hide_banner", "-loglevel", "error", "-y", "-threads", str(a.threads),
-         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (W, H),
-         "-framerate", str(FPS), "-i", "pipe:0", "-r", str(FPS)] + sink_args,
-        stdin=subprocess.PIPE)
+    sink = None
+    if not a.plates:
+        sink = popen_polite(
+            [ff, "-hide_banner", "-loglevel", "error", "-y", "-threads", str(a.threads),
+             "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (W, H),
+             "-framerate", str(FPS), "-i", "pipe:0", "-r", str(FPS)] + sink_args,
+            stdin=subprocess.PIPE)
 
     col = np.array([float(x) for x in a.color.split(",")], "f4")
     stone = np.array([float(x) for x in a.stone.split(",")], "f4")
@@ -1635,7 +1687,18 @@ def main():
             setu(comp_prog, nm, val)
         fbo_final.use(); fbo_final.clear(0, 0, 0, 1); comp_vao.render()
 
-        sink.stdin.write(fbo_final.read(components=3))
+        if sinks:
+            # ONE frame, sliced two ways. Both plates therefore carry byte-identical
+            # content through the 1000 px overlap, and full brightness in both -
+            # which is the single requirement the delivery cannot get wrong. There
+            # is no master on disk to drift from, and no second render to disagree.
+            frame = np.frombuffer(fbo_final.read(components=3),
+                                  np.uint8).reshape(H, W, 3)
+            for sk in sinks:
+                sk["proc"].stdin.write(
+                    np.ascontiguousarray(frame[:, sk["x0"]:sk["x1"]]).tobytes())
+        else:
+            sink.stdin.write(fbo_final.read(components=3))
 
         if k % 30 == 0 or k == a.count - 1:
             el = time.time() - t_start
@@ -1645,14 +1708,25 @@ def main():
                              (k + 1, a.count, fps, eta))
             sys.stdout.flush()
 
-    sink.stdin.close(); sink.wait()
+    if sinks:
+        for sk in sinks:
+            sk["proc"].stdin.close()
+        for sk in sinks:
+            sk["proc"].wait()
+    else:
+        sink.stdin.close(); sink.wait()
     try:
         noise.stdout.close(); noise.wait(timeout=5)
     except Exception:
         noise.kill()
     el = time.time() - t_start
     print("\n\ndone in %.1f s  (%.1f fps)" % (el, a.count / max(el, 1e-6)))
-    print(dst if not a.png else os.path.dirname(dst))
+    if sinks:
+        for sk in sinks:
+            sz = os.path.getsize(sk["path"]) / (1024.0 ** 3) if os.path.isfile(sk["path"]) else 0.0
+            print("  %-6s %8.2f GB  %s" % (sk["name"], sz, sk["path"]))
+    else:
+        print(dst if not a.png else os.path.dirname(dst))
 
 
 if __name__ == "__main__":
