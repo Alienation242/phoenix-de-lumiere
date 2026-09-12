@@ -55,6 +55,7 @@ param(
     [string] $Layout = 'Plates',
     [ValidateSet('Layer', 'Aligned', 'Noise')]
     [string] $Masks,
+    [string] $Tag = 'KEVIN-CLEVER',
     [string] $OutRoot,
     [string] $Out,
     [int]    $Threads = 4
@@ -330,6 +331,7 @@ Line ("  layout      {0}" -f $(switch ($Layout) {
     default    { 'BOTH - two plates AND one stitched canvas, from one render' } }))
 Line ("  masks       {0}" -f $(if ($Masks -eq 'Aligned') {
     'the authored shapes, aligned to the shared plate' } else { 'the authored colour mask, as drawn' }))
+Line ("  file names  ..._{0}.{1}" -f $Tag, $(if ($P.Codec -eq 'h264') { 'mp4' } else { 'mov' }))
 Line ("  codec       {0}" -f $P.Codec)
 Line ("  output      {0}" -f $outDir)
 Line ("  needs       about {0} GB and roughly {1} minutes" -f $needGB, $mins)
@@ -468,7 +470,8 @@ $started = Get-Date
 $layoutArg = switch ($Layout) { 'Plates' { 'plates' } 'Stitched' { 'canvas' } default { 'both' } }
 $renderArgs = @('--div', $div, '--start', $start, '--count', $count,
                 '--layout', $layoutArg, '--codec', $P.Codec, '--threads', $Threads,
-                '--masks', $Masks.ToLower(), '--log', $log, '--out', $outDir)
+                '--masks', $Masks.ToLower(), '--log', $log, '--out', $outDir,
+                '--tag', $Tag)
 if ($HQ) { $renderArgs += '--hq' }
 # NOT piped into Tee-Object on purpose. The progress bar rewrites one line with
 # a carriage return; a pipe in front of it turns every update into its own line

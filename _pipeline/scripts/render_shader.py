@@ -1201,6 +1201,14 @@ def main():
                     help="codec for --plates")
     ap.add_argument("--mp4", action="store_true", help="write a preview MP4")
     ap.add_argument("--out", default="")
+    ap.add_argument("--tag", default="KEVIN-CLEVER",
+                    help="the suffix on every delivered file name. This used "
+                         "to be the mask set (MASK-LAYER / MASK-ALIGNED); it "
+                         "is the artist's name now, because that is what the "
+                         "producer needs to see on a file that arrives among "
+                         "eleven other surfaces. The mask set still names the "
+                         "FOLDER, so rendering both one after the other still "
+                         "cannot overwrite anything")
     ap.add_argument("--preview-width", type=int, default=0,
                     help="downscale the MP4 to this width (render stays full size)")
     ap.add_argument("--hq", action="store_true", help="use the ProRes masters from source_hq")
@@ -1805,9 +1813,15 @@ def main():
                          "dimension cannot be encoded. Use --div 1 or 2."
                          % (layout, a.div, nm, pw, H))
 
+        # A tag goes straight into a file name, so anything that is not
+        # plainly safe there becomes a hyphen rather than a surprise.
+        tag = re.sub(r"[^A-Za-z0-9_-]+", "-", a.tag).strip("-").upper()
+        if not tag:
+            tag = "MASK-" + a.masks.upper()
+
         for nm, x0, pw in targets:
-            fname = "PxDL_SW_%s_%05d-%05d_MASK-%s.%s" % (
-                nm, a.start, last, a.masks.upper(), spec["ext"])
+            fname = "PxDL_SW_%s_%05d-%05d_%s.%s" % (
+                nm, a.start, last, tag, spec["ext"])
             path = os.path.join(outdir, fname)
             proc = popen_polite(
                 [ff, "-hide_banner", "-loglevel", "error", "-y",
