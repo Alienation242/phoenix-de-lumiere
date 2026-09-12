@@ -16,3 +16,6 @@ __pycache__/
 # os
 Thumbs.db
 desktop.ini
+
+# offline install bundle - wheels + ffmpeg zip, ~160 MB, rebuildable
+_offline_bundle/

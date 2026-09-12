@@ -99,9 +99,46 @@ things that merely need a decision.
 
 ---
 
+## A machine with no working internet
+
+This happened twice on this job: `pip install moderngl` dies with
+`getaddrinfo failed` and `git`/`get_ffmpeg.ps1` with `Could not resolve host`.
+That is broken DNS on the machine, not a problem with the project — and it does
+not need fixing to get a render out. Build a bundle on a machine that *does*
+have internet:
+
+```powershell
+.\_pipeline\scripts\make_offline_bundle.ps1
+```
+
+It writes `_offline_bundle\` (~155 MB) next to the project, containing:
+
+| | |
+|---|---|
+| `wheels\` | moderngl, numpy, glcontext — as wheels, for python 3.10 through 3.13, because a wheel is version-specific and the target machine rarely matches |
+| `ffmpeg\` | the official build **as the published zip**, plus its SHA-256 in a file so the offline machine can verify it with nobody to ask |
+| `INSTALL.cmd` | double-click this over there |
+
+Copy the folder across — USB stick, network share, anything — and double-click
+`INSTALL.cmd`. It finds the project folder itself (and asks if it cannot),
+installs the wheels with `pip --no-index` so nothing can even attempt a name
+lookup, verifies each module actually *imports* rather than trusting pip's
+"Successfully installed", unpacks ffmpeg into `_pipeline\bin\`, and checks the
+three encoders are really there. Nothing system-wide, no admin.
+
+The one thing it cannot carry is python itself. Install that first, ticking
+*Add to PATH*.
+
+```powershell
+.\make_offline_bundle.ps1 -Dest E:\              straight onto a USB stick
+.\make_offline_bundle.ps1 -PythonVersions 310    only the version you need
+```
+
+---
+
 ## ffmpeg
 
-**One command on a new machine:**
+**One command on a new machine** — when it *has* internet:
 
 ```powershell
 .\_pipeline\scripts\get_ffmpeg.ps1

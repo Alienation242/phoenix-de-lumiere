@@ -67,6 +67,19 @@ at preflight, and previews fall back to mpeg4 — the full 80-second preview cam
 out at 49 MB that way, where x264 at the same size would be a small fraction of
 it.
 
+**If the machine has no working internet** (`getaddrinfo failed`,
+`Could not resolve host` — broken DNS, which happened twice on this job), do
+this on a machine that does:
+
+```powershell
+.\make_offline_bundle.ps1
+```
+
+then copy the `_offline_bundle` folder it makes across and double-click
+`INSTALL.cmd` inside it. It carries the python wheels and ffmpeg, installs both
+without touching the network, and tells you what is still missing. See
+`docs/02_PORTABLE_RENDER.md`.
+
 Nothing in the pipeline needs a licensed application.
 
 ---
