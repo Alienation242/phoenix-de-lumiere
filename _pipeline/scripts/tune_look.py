@@ -103,12 +103,36 @@ GROUPS = [
          "orders the dither sweeps through - narrow reads flat brown, wide is "
          "more colour and more chroma noise"),
     ]),
+    ("Windows - panes, bevels, bars", [
+        ("panes", "float", 0.0, 1.0, 0.01,
+         "master for the leaded grid. 0 is the old plain glass"),
+        ("pane_cols", "int", 1, 10, 1,
+         "panes across an opening. 4, off the sketch of the real building"),
+        ("pane_rows_upper", "int", 1, 14, 1,
+         "rows in an upper window. 6 makes the panes square (4 % out); the "
+         "sketch drew 4, which would be 44 % out"),
+        ("pane_rows_lower", "int", 1, 16, 1,
+         "rows in a lower window. 8 lands 8 % off square"),
+        ("bevel", "float", 0.0, 0.45, 0.01,
+         "chamfer round each pane, as a fraction of the pane"),
+        ("bevel_depth", "float", 0.0, 2.0, 0.05,
+         "how far the chamfer tips the glass - each pane then catches the "
+         "interference colours at its own angle"),
+        ("mullion", "float", 0.0, 0.25, 0.005,
+         "the separation between panes, as a fraction of a pane"),
+        ("mullion_dark", "float", 0.0, 1.0, 0.02,
+         "how much light the bars take out of the glass"),
+    ]),
     ("Dither and pillars", [
         ("levels", "int", 4, 128, 1,
          "colour steps on the wall. 32 is the PSX look. chrome is never quantised"),
         ("dither_grid", "int", 1, 4, 1,
          "dither cell in render pixels. KEEP AT 1 - anything else crawls"),
         ("pillar_gain", "float", 0.0, 3.0, 0.05, "how lit the pillars are"),
+        ("flutes", "int", 0, 12, 1,
+         "grooves down a pillar shaft. 0 is a plain cylinder"),
+        ("flute_depth", "float", 0.0, 0.8, 0.01,
+         "how far a groove tips the normal"),
         ("trim_lift", "float", 0.0, 1.0, 0.05,
          "capital and plinth against the shaft. 0 = one continuous stone, "
          "which is what it should be"),

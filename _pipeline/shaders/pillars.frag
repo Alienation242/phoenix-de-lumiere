@@ -42,6 +42,8 @@ uniform float uSaturation;
 uniform float uLevels;
 uniform float uGrid;
 uniform float uTrimLift;      // 0 = cap and plinth are the same stone as the shaft
+uniform float uFlutes;        // grooves down the shaft. 0 = a plain cylinder
+uniform float uFluteDepth;    // how far a groove tips the normal
 uniform float uPlateMean;     // THIS frame's mean luma, straight from noise_arc.csv
 uniform float uPlateHP;       // 1 = keep the plate's grain, drop the wall's banding
 uniform float uPlateBlur;     // radius of "local", in canvas px
@@ -80,6 +82,28 @@ void main() {
 
     // treat the column as a cylinder: the normal swings -1..1 across its width
     float nx = clamp(u * 2.0 - 1.0, -1.0, 1.0);
+
+    // Flutes. Shaft only - cap and plinth are not fluted on a real column, and
+    // `body` is exactly the shaft matte.
+    //
+    // Perturbing nx ALONE very nearly does nothing, which is worth writing
+    // down. The shading below is driven by NoV, and with V almost head-on
+    // NoV is just nz = sqrt(1 - nx*nx). That is flat near the middle of the
+    // shaft, so a groove there moves the brightness by a couple of per cent
+    // and only bites at the edges, which is the opposite of what carving looks
+    // like. A symmetric groove under a head-on light shades symmetrically and
+    // disappears.
+    //
+    // So the tilt goes in (it is the honest part, and it feeds the specular
+    // band) AND the groove is lit from the side, using the same direction the
+    // band below uses so the carving and the highlight agree about where the
+    // light is.
+    float fluteShade = 0.0;
+    if (uFlutes >= 1.0 && uFluteDepth > 0.0) {
+        float dn = sin(u * uFlutes * 6.28318530718);
+        nx = clamp(nx + dn * uFluteDepth * 0.35 * body, -1.0, 1.0);
+        fluteShade = dn * uFluteDepth * body;
+    }
     float nz = sqrt(max(0.0, 1.0 - nx * nx));
     vec3  N  = normalize(vec3(nx, 0.0, nz));
     vec3  V  = normalize(vec3(camN * 0.45, 0.0, 1.0));   // the camera really does move
@@ -97,6 +121,7 @@ void main() {
     // Brighter and with far more range across the shaft than before. These are
     // meant to be lit stone standing in the room, not silhouettes.
     vec3 col = uStone * (0.30 + 1.05 * NoV) + env * 0.34;
+    col *= (1.0 + fluteShade);
 
     // a vertical specular band that slides around the shaft as the camera moves
     float band = pow(max(dot(N, normalize(vec3(0.55 - camN * 0.8, 0.25, 0.8))), 0.0), 14.0);

@@ -1305,6 +1305,43 @@ def main():
                     help="how far the plate's own darkness is allowed to pull the "
                          "wall down. was 0.25, which crushed the quiet passages")
     ap.add_argument("--oil-gain", type=float, default=6.8)
+    # ---- the leaded grid in the windows, and the flutes on the pillars ----
+    # The pane counts are the artist's, off a sketch of the real building. The
+    # UPPER row count is not: the sketch says 4 and the mattes say 6. With 4
+    # columns, the rectangular part of an upper window is 332 x 478 canvas px,
+    # which at 4 rows makes a pane 44 % out of square and at 6 rows 4 % out.
+    # The lower windows corroborate it - 4 x 8 lands 8 % out of square - so
+    # square panes are a measured property of this facade rather than a guess,
+    # and 6 is the row count that respects it. Both are flags, so disagreeing
+    # is one number.
+    ap.add_argument("--panes", type=float, default=1.0,
+                    help="master for the window grid. 0 is the old plain glass")
+    ap.add_argument("--pane-cols", type=float, default=4.0,
+                    help="panes across an opening, both window types")
+    ap.add_argument("--pane-rows-upper", type=float, default=6.0,
+                    help="rows in an upper window. 6 is what makes the panes "
+                         "square; the sketch drew 4")
+    ap.add_argument("--pane-rows-lower", type=float, default=8.0,
+                    help="rows in a lower window")
+    ap.add_argument("--pane-split", type=float, default=18.5,
+                    help="opening index above which an opening counts as a "
+                         "LOWER window. The mattes are numbered upper first "
+                         "(1-18), then lower (19-24), then the doors")
+    ap.add_argument("--bevel", type=float, default=0.12,
+                    help="chamfer round each pane, as a fraction of the pane")
+    ap.add_argument("--bevel-depth", type=float, default=0.55,
+                    help="how far the chamfer tips the glass. This is the whole "
+                         "effect: each pane then catches the interference "
+                         "colours at its own angle")
+    ap.add_argument("--mullion", type=float, default=0.055,
+                    help="the separation between panes, as a fraction of a pane")
+    ap.add_argument("--mullion-dark", type=float, default=0.45,
+                    help="how much light the bars take out of the glass")
+    ap.add_argument("--flutes", type=float, default=5.0,
+                    help="grooves down a pillar shaft. 0 is a plain cylinder")
+    ap.add_argument("--flute-depth", type=float, default=0.22,
+                    help="how far a groove tips the normal")
+
     ap.add_argument("--oil-bleed", type=float, default=0.0,
                     help="lift the oil out of the windows and across the whole "
                          "wall. 0 = the openings only, which is the look "
@@ -1903,6 +1940,15 @@ def main():
         setu(bg_prog, "uSkyGain", a.sky_gain)
         setu(bg_prog, "uOilGain", a.oil_gain)
         setu(bg_prog, "uOilBleed", a.oil_bleed)
+        setu(bg_prog, "uPanes", a.panes)
+        setu(bg_prog, "uPaneCols", a.pane_cols)
+        setu(bg_prog, "uPaneRowsUp", a.pane_rows_upper)
+        setu(bg_prog, "uPaneRowsLow", a.pane_rows_lower)
+        setu(bg_prog, "uPaneSplit", a.pane_split)
+        setu(bg_prog, "uBevel", a.bevel)
+        setu(bg_prog, "uBevelDepth", a.bevel_depth)
+        setu(bg_prog, "uMullion", a.mullion)
+        setu(bg_prog, "uMullionDark", a.mullion_dark)
         setu(bg_prog, "uColor", tuple(col))
         setu(bg_prog, "uLevels", a.levels)
         # uGrid is the dither cell in RENDER pixels, so it must NOT track --div.
@@ -2078,6 +2124,8 @@ def main():
             setu(pil_prog, "uPlateHP", a.plate_hp)
             setu(pil_prog, "uPlateBlur", a.plate_blur)
             setu(pil_prog, "uIntro", scene)
+            setu(pil_prog, "uFlutes", a.flutes)
+            setu(pil_prog, "uFluteDepth", a.flute_depth)
             setu(pil_prog, "uSaturation", a.saturation)
             setu(pil_prog, "uLevels", a.levels)
             setu(pil_prog, "uGrid", a.dither_grid)

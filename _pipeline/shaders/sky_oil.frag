@@ -57,6 +57,23 @@ uniform float uSkyGain;
 uniform float uOilGain;
 uniform float uOilSweep;
 uniform float uOilBleed;      // 0 = oil lives in the openings, 1 = everywhere
+
+// ---- the leaded grid inside every window --------------------------------
+// The pane COUNT comes from the artist's sketch; the row count for the upper
+// windows comes from measuring the mattes. With 4 columns the rectangular part
+// of a lower window is 4 x 8 panes at 149 x 138 canvas px - 8 % off square -
+// and an upper window is 4 x 6 at 83 x 80 px, 4 % off. Square panes are
+// therefore a real property of this facade, not an assumption, which is what
+// makes one pane a usable ruler for the wall's real size.
+uniform float uPanes;         // master: 0 turns the whole grid off
+uniform float uPaneCols;      // panes across an opening
+uniform float uPaneRowsUp;    // rows in an upper window
+uniform float uPaneRowsLow;   // rows in a lower window
+uniform float uPaneSplit;     // opening index above which it is a LOWER window
+uniform float uBevel;         // bevel width, as a fraction of one pane
+uniform float uBevelDepth;    // how far the bevel tips the normal
+uniform float uMullion;       // bar width, as a fraction of one pane
+uniform float uMullionDark;   // how much the bars take out of the glass
 uniform float uFilmMin;
 uniform float uFilmMax;
 uniform float uLevels;
@@ -83,6 +100,36 @@ uniform float uPlateContrast; // how hard the dither swings around that mean
 float rel(float x) {
     return clamp(0.5 + (x - uPlateMean) * uPlateContrast, 0.0, 1.0);
 }
+
+// A leaded grid inside one opening. openUV is already 0..1 across THIS
+// opening whatever size it is, so the same call lands the grid correctly on
+// every window without knowing anything about where it sits on the wall.
+//
+// It returns a TILT rather than a full normal: the oil below already builds a
+// view vector out of the opening's UV, and adding the tilt into that is what
+// makes each pane catch the interference colours at its own angle. That is the
+// bevel - not a painted highlight, an actual change of surface direction.
+void paneGrid(vec2 ouv, float rows, out vec2 tilt, out float bar) {
+    tilt = vec2(0.0);
+    bar = 0.0;
+    if (uPanes <= 0.0 || uPaneCols < 1.0 || rows < 1.0) return;
+
+    vec2 c = fract(ouv * vec2(uPaneCols, rows));
+    vec2 e = min(c, 1.0 - c);            // distance to this pane's own edges
+    float d = min(e.x, e.y);
+
+    // the separation between panes sits on the join
+    bar = 1.0 - smoothstep(uMullion * 0.55, uMullion, d);
+
+    // and the glass is chamfered for the last uBevel of each pane, tipping
+    // AWAY from the pane's centre so it reads as raised glass in a frame
+    float bx = 1.0 - smoothstep(0.0, max(uBevel, 1e-4), e.x);
+    float by = 1.0 - smoothstep(0.0, max(uBevel, 1e-4), e.y);
+    tilt = vec2(bx * sign(c.x - 0.5), by * sign(c.y - 0.5)) * uBevelDepth;
+    tilt *= uPanes;
+    bar  *= uPanes;
+}
+
 
 void main() {
     vec2 uv = vUv;
@@ -135,6 +182,14 @@ void main() {
     // clamped well away from grazing so no window blows out white.
     vec2 lo = (openUV * 2.0 - 1.0) * uOilSweep;
     lo.x += uCamX * uParIn * px.x * 8.0;
+
+    // The panes. Which row count applies is decided by the opening's own index:
+    // the mattes are numbered upper windows first, then lower, then doors, so
+    // one threshold separates them without a second texture.
+    vec2 paneTilt; float paneBar;
+    paneGrid(openUV, (openIdx > uPaneSplit) ? uPaneRowsLow : uPaneRowsUp,
+             paneTilt, paneBar);
+    lo += paneTilt;
     vec3 odir  = normalize(vec3(lo.x, lo.y, 1.0));
     vec3 onrm  = -odir;
     vec3 oview = normalize(vec3(lo.x * 0.5, lo.y * 0.5, -1.0));
@@ -152,6 +207,10 @@ void main() {
 
     vec3 oilColor = vec3(r, g, b) * uOilGain + (uColor * specular * 2.0);
     oilColor = oilColor / (oilColor + vec3(1.0));
+    // The bars are not glass. They take light out rather than adding a drawn
+    // line, so they stay part of the surface at every brightness the day goes
+    // through instead of turning into a grid stencilled over the top.
+    oilColor *= (1.0 - paneBar * uMullionDark);
 
     // uOilBleed lifts the oil OUT of the windows and across the whole wall.
     // At 0 this line is exactly what it always was. At 1 the thin film covers
