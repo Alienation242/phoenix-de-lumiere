@@ -369,7 +369,12 @@ Z_NEAR_MIN = 700.0  # ... and the shyest one. Every object used to peak at the
                     # closest point and every single one passed in front. Giving
                     # each its own near point is what puts some of them behind.
 Z_LANE = 700.0      # spread of the per-object depth lane
-FAR_FRAC = 0.20     # size far out beyond the wall, as a fraction of opening size
+FAR_FRAC = 0.82     # Size while it is still outside, as a fraction of opening
+                    # size. Nearly opening-sized on purpose: at 0.20 the object
+                    # began as a distant speck and swelled toward the viewer
+                    # head-on, which is the "coming from the front" look. It now
+                    # arrives already the size of the hole and travels SIDEWAYS
+                    # into it.
 
 
 def pick_target_door(doors):
@@ -484,6 +489,14 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
             return sum(g for _, _, g in w) or 1.0
 
         _wx, _wy = wander(), wander()
+        # Which way it flies in along the wall, and which way it leaves. The
+        # departure is the opposite hand, so it crosses rather than doubles back.
+        _side = 1.0 if rng.random() < 0.5 else -1.0
+        _app_dir = (_side, float(rng.uniform(-0.30, 0.30)))
+        _dep_dir = (-_side, float(rng.uniform(-0.30, 0.30)))
+        _app_dist = float(rng.uniform(0.60, 1.10)) * float(w["w"])
+        _dep_dist = float(rng.uniform(0.60, 1.10)) * float(door["w"])
+
         _ang = float(rng.uniform(0.0, 6.2832))
         _ang2 = _ang + math.pi + float(rng.uniform(-1.1, 1.1))
         _oin = (math.cos(_ang), math.sin(_ang) * 0.75)
@@ -493,6 +506,9 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
             p0=(wx, wy), c1=c1, c2=c2, p2=(dx, dy),
             win=(wx, wy, float(w["w"]) * 0.5, float(w["h"]) * 0.5),
             door=(dx, dy, float(door["w"]) * 0.5, float(door["h"]) * 0.5),
+            # the index each opening carries in the opening-ID map, so an object
+            # out beyond the wall can be clipped to ITS OWN hole and no other
+            win_idx=float(w["index"]), door_idx=float(door["index"]),
             t0=t0, dur=dur, hero=hero,
             # Clamped at both ends. The opening it comes through sets the
             # scale, but an upper window is 325 px and a lower one 600, so
@@ -535,6 +551,8 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
             # exit is roughly opposite the entry, so it reads as having crossed
             # rather than doubled back.
             off_in=_oin, off_out=_oout,
+            app_dir=_app_dir, dep_dir=_dep_dir,
+            app_dist=_app_dist, dep_dist=_dep_dist,
             # precession: a slow wobble ON TOP of the spin. Nothing in the real
             # world rotates at a perfectly constant rate about a fixed axis, and
             # the eye reads that immediately as machinery.
@@ -685,6 +703,23 @@ def object_state(o, t):
     # the swell multiplier peaks at 1.0, so it can never lift base over the fit
     scale = base * (0.88 + 0.12 * arc)
 
+    # ---- the side approach, out beyond the wall ---------------------------
+    # It is clipped to the openings while it is out there, so off to one side it
+    # is simply not drawn - then it slides into the window's footprint and
+    # appears ON the window, already the right size, and flies through. That is
+    # what makes it arrive from the side instead of fading up head-on out of
+    # nothing.
+    #
+    # Both ramps finish while the object is still COMPLETELY behind the wall
+    # (measured: wall_z + radius is about -450 px at the end of the approach),
+    # so nothing is sliding sideways while it is threading the opening, and the
+    # fit guarantees below are untouched.
+    app = 1.0 - smoother(pe, 0.0, 0.095)
+    dep = smoother(pe, 0.905, 1.0)
+    x += o["app_dir"][0] * o["app_dist"] * app + o["dep_dir"][0] * o["dep_dist"] * dep
+    y += (o["app_dir"][1] * o["app_dist"] * app
+          + o["dep_dir"][1] * o["dep_dist"] * dep) * 0.5
+
     # ---- drift, only once it is clear of the wall -------------------------
     # Enveloped by `clear` rather than by the arc. The arc is still 0.79 at the
     # moment the object is in the window, which would let the wander shove it
@@ -719,7 +754,8 @@ def object_state(o, t):
     alpha = smoother(pe, 0.0, 0.015) * (1.0 - smoother(pe, 0.99, 1.0))
 
     z = wall_z + o["lane"] * Z_LANE
-    return (np.array([x, y, z], "f4"), wall_z, scale, alpha, arc, clear)
+    open_idx = o["win_idx"] if pe < 0.5 else o["door_idx"]
+    return (np.array([x, y, z], "f4"), wall_z, scale, alpha, arc, clear, open_idx)
 
 
 # --------------------------------------------------------------------------- textures
@@ -849,6 +885,10 @@ def main():
                          "180,2400 is more colour again and more chroma noise")
     ap.add_argument("--stone", default="0.72,0.66,0.58", help="pillar colour")
     ap.add_argument("--color", default="0.38,0.52,0.85")
+    ap.add_argument("--door-tone", default="0.17,0.10,0.23",
+                    help="colour of the doorways. deliberately not the sky's blue - "
+                         "the doors are the way out and want to read as depth")
+    ap.add_argument("--door-gain", type=float, default=1.0)
 
     # depth
     ap.add_argument("--parallax", type=float, default=220.0,
@@ -1124,6 +1164,7 @@ def main():
 
     col = np.array([float(x) for x in a.color.split(",")], "f4")
     stone = np.array([float(x) for x in a.stone.split(",")], "f4")
+    door_tone = np.array([float(x) for x in a.door_tone.split(",")], "f4")
     env_warm = np.array([float(x) for x in a.env_warm.split(",")], "f4")
     env_cool = np.array([float(x) for x in a.env_cool.split(",")], "f4")
     film = [float(x) for x in a.film.split(",")]
@@ -1196,6 +1237,8 @@ def main():
         setu(bg_prog, "uPlateContrast", a.plate_contrast)
         setu(bg_prog, "uSaturation", a.saturation)
         setu(bg_prog, "uArcFloor", a.arc_floor)
+        setu(bg_prog, "uDoorTone", tuple(door_tone))
+        setu(bg_prog, "uDoorGain", a.door_gain)
         setu(bg_prog, "uSpread", a.spread)
         setu(bg_prog, "uSkyGain", a.sky_gain)
         setu(bg_prog, "uOilGain", a.oil_gain)
@@ -1228,11 +1271,12 @@ def main():
             st = object_state(o, t)
             if st is None:
                 continue
-            pos, wall_z, scale, alpha, swell, clear = st
+            pos, wall_z, scale, alpha, swell, clear, open_idx = st
             if alpha <= 0.004:
                 continue
             live.append(dict(o=o, pos=pos, wall_z=wall_z, scale=scale,
-                             alpha=alpha, swell=swell, clear=clear))
+                             alpha=alpha, swell=swell, clear=clear,
+                             open_idx=open_idx))
         if a.separation > 0:
             resolve_overlaps(live, a.separation)
 
@@ -1243,10 +1287,11 @@ def main():
             ctx.enable(moderngl.DEPTH_TEST)
             ctx.enable(moderngl.BLEND)
             ctx.blend_func = (moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
-            t_plate.use(0); t_aux.use(1); tex_bg.use(2)
+            t_plate.use(0); t_aux.use(1); tex_bg.use(2); t_oid.use(3)
             setu(obj_prog, "uPlate", 0)
             setu(obj_prog, "uAux", 1)
             setu(obj_prog, "uBg", 2)
+            setu(obj_prog, "uOpenId", 3)
             setu(obj_prog, "uEmerge", a.emerge)
             setu(obj_prog, "uEmergeTint", a.emerge_tint)
             setu(obj_prog, "uFog", a.fog)
@@ -1303,6 +1348,7 @@ def main():
                 setu(obj_prog, "uTint", tuple(o["tint"]))
                 setu(obj_prog, "uAlpha", float(alpha * scene))
                 setu(obj_prog, "uZBias", z_bias / float(a.div))
+                setu(obj_prog, "uOpenIdx", float(L["open_idx"]))
                 vaos[o["shape"]].render()
 
             # ---- in front of the pillars, or behind them. NEVER BOTH -------

@@ -30,6 +30,8 @@ out vec4 fragColor;
 uniform vec2  uRes;
 uniform sampler2D uPlate;    // the room itself, as ambient light on the metal
 uniform sampler2D uAux;      // .a = every opening in the wall
+uniform sampler2D uOpenId;   // .r = which opening, as an index
+uniform float uOpenIdx;      // the one THIS object is passing through
 uniform sampler2D uBg;       // the wall as already rendered THIS frame, so an
                              // object inside an opening can read the oil it is
                              // sitting in and take its colour
@@ -185,7 +187,21 @@ void main() {
     float wz = vWorld.z - uZBias;
     float behind = 1.0 - smoothstep(-uWallFade, uWallFade, wz);
     vec2 scr = gl_FragCoord.xy / uRes;
-    float slot = texture(uAux, scr).a;
+
+    // Clipped to ITS OWN opening, not to the union of all of them.
+    //
+    // An object flies in sideways along the wall before it reaches its window,
+    // and on the way it passes over other windows. Against the union mask it
+    // was drawn in those too - appearing in a hole it has nothing to do with,
+    // wearing that hole's oil colour, and then vanishing again. That is the
+    // green and red flashes: not a masking failure, the mask working on the
+    // wrong opening.
+    //
+    // The ID map is NEAREST-sampled and holds the opening index, so this is an
+    // exact match rather than a proximity test.
+    float idx = floor(texture(uOpenId, scr).r * 255.0 + 0.5);
+    float mine = step(abs(idx - uOpenIdx), 0.5);
+    float slot = texture(uAux, scr).a * mine;
 
     float a = uAlpha * mix(1.0, slot, behind);
 

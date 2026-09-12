@@ -64,6 +64,8 @@ uniform float uReveal;
 uniform float uParIn;
 uniform float uIntro;         // 0 = the bare shared noise, 1 = the full treatment
 uniform float uSaturation;
+uniform vec3  uDoorTone;      // the doors are not oil and not sky
+uniform float uDoorGain;
 uniform float uArcFloor;      // how dark the wall is allowed to get at uArc = 0
 uniform float uPlateMean;     // THIS frame's mean luma, straight from noise_arc.csv
 uniform float uPlateContrast; // how hard the dither swings around that mean
@@ -150,8 +152,22 @@ void main() {
     vec3 oilColor = vec3(r, g, b) * uOilGain + (uColor * specular * 2.0);
     oilColor = oilColor / (oilColor + vec3(1.0));
 
-    float oilAmount = max(mWin, mDoor * 0.6) * uSkyToOil * inOpen;
+    float oilAmount = mWin * uSkyToOil * inOpen;
     vec3 col = mix(sky, oilColor, oilAmount);
+
+    // ---- doors: a way out, not a pane of oil -------------------------------
+    // They used to take 60% oil and 40% SKY. The sky is the brightest thing on
+    // this wall, so every bright dither dot inside a doorway punched through as
+    // a vivid blue speck - which is exactly the white-and-blue mess on the
+    // doors.
+    //
+    // A door is a hole to the outside, so it gets its own dark recess instead.
+    // The plate still drives it, like everything else here, but over a much
+    // narrower range and in its own tone - so a chrome object leaving through
+    // the middle door reads against darkness rather than against the sky.
+    float doorDepth = mix(1.0, 0.42, openUV.y);
+    vec3 doorCol = uDoorTone * (0.16 + 0.62 * rel(L)) * doorDepth * uDoorGain;
+    col = mix(col, doorCol, mDoor * inOpen);
 
     // ---- fake reveals: a thick wall around every opening -------------------
     // Move right and the LEFT jamb comes into view, and vice versa.
