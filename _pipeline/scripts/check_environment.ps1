@@ -110,7 +110,7 @@ foreach ($e in @('png', 'ffv1', 'prores_ks', 'dnxhd', 'libx264')) {
 }
 $want = @{ prores4444='prores_ks'; prores422hq='prores_ks'; dnxhr444='dnxhd'; h264='libx264'; ffv1='ffv1'; png16='png' }[$Codec]
 if ($want -and -not (Test-FFmpegEncoder $want)) {
-    Caution ("-Codec $Codec needs '$want', which this build lacks. Get a full build from gyan.dev or BtbN and set `$env:PXDL_FFMPEG.")
+    Caution ("-Codec $Codec needs '$want', which this build lacks. Run: .\get_ffmpeg.ps1")
 }
 
 Write-Host ""

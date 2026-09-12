@@ -13,6 +13,11 @@ REM  If a second, aligned mask set has been built it also asks which one to
 REM  use. Each goes to its own folder with its own file names, so both can be
 REM  rendered one after the other. See _pipeline\docs\06_MASKS.md.
 REM
+REM  It then asks WHERE TO WRITE. Press Enter for the default - a "deliver"
+REM  folder inside this project on C: - or type any folder on any drive. It
+REM  shows what each drive has free next to what the chosen preset needs,
+REM  because a full delivery is about 51 GB and a system drive rarely has it.
+REM
 REM  The window stays open at the end so you can read what happened.
 REM ===========================================================================
 title Phoenix de Lumiere - SW wall - delivery export

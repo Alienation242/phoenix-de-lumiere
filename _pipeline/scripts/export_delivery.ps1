@@ -10,6 +10,18 @@
       .\export_delivery.ps1 -Preset Deliver -Yes        # no confirmation
       .\export_delivery.ps1 -Preset Draft               # quick half-res look
       .\export_delivery.ps1 -Preset Deliver -Masks Aligned
+      .\export_delivery.ps1 -Preset Deliver -OutRoot E:\PxDL
+
+  WHERE IT WRITES
+
+  The menu asks. Press Enter for the default - a 'deliver' folder inside the
+  project on C: - or type any folder on any drive. It is created if it is not
+  there, proven writable, and checked for room before anything starts.
+
+  A full delivery is about 51 GB and will not fit on most system drives, so
+  this is where you point it at an external one. From the command line -OutRoot
+  is that same choice; -Out is the blunter one, writing exactly where it is
+  told and making no subfolder.
 
   -Masks picks which description of the facade to render against. 'Layer' is
   the authored colour-coded mask exactly as drawn; 'Aligned' is the same
@@ -43,6 +55,7 @@ param(
     [string] $Layout = 'Plates',
     [ValidateSet('Layer', 'Aligned', 'Noise')]
     [string] $Masks,
+    [string] $OutRoot,
     [string] $Out,
     [int]    $Threads = 4
 )
@@ -105,6 +118,103 @@ function Good { param([string]$s) Write-Host "  OK    $s" -ForegroundColor Green
 function Bad  { param([string]$s) Write-Host "  FAIL  $s" -ForegroundColor Red }
 function Warn { param([string]$s) Write-Host "  warn  $s" -ForegroundColor Yellow }
 
+# ---------------------------------------------------------- where it writes --
+function Get-FreeGB {
+    # $null when it cannot be measured - a UNC share, a drive that went away -
+    # rather than an exception, so the caller decides what that means.
+    param([string]$Path)
+    try {
+        $root = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($Path))
+        if (-not $root) { return $null }
+        $di = New-Object IO.DriveInfo $root
+        if (-not $di.IsReady) { return $null }
+        return [math]::Round($di.AvailableFreeSpace / 1GB, 1)
+    } catch { return $null }
+}
+
+function Show-Drives {
+    param([double]$NeedGB)
+    foreach ($d in [IO.DriveInfo]::GetDrives()) {
+        if (-not $d.IsReady) { continue }
+        if ($d.DriveType -eq 'CDRom') { continue }
+        $free = [math]::Round($d.AvailableFreeSpace / 1GB, 1)
+        $verdict = if ($free -gt $NeedGB * 1.15) { 'room for this preset' } else { 'too small for this preset' }
+        Line ("    {0,-4} {1,-9} {2,8:N1} GB free   {3}" -f $d.Name, $d.DriveType, $free, $verdict)
+    }
+}
+
+function Read-ExportRoot {
+    # Hands back a folder that exists and has been PROVEN writable. Creating a
+    # directory does not prove that - a full drive and a read-only share both
+    # get past it - and the alternative is finding out two hours in, at the
+    # first encode.
+    param([string]$Default, [double]$NeedGB)
+
+    Head 'WHERE SHOULD THE FILES GO?'
+    Line
+    Line ("  This preset needs about {0:N1} GB." -f $NeedGB)
+    Line
+    Line ("  default   {0}" -f $Default)
+    Line ("            {0}" -f $(if ($env:PXDL_DELIVER_ROOT) {
+        'from PXDL_DELIVER_ROOT' } else { 'the deliver folder inside the project' }))
+    $dFree = Get-FreeGB $Default
+    if ($null -eq $dFree) {
+        Line '            free space could not be measured'
+    } elseif ($dFree -gt $NeedGB * 1.15) {
+        Line ("            {0:N1} GB free - enough" -f $dFree)
+    } else {
+        Line ("            {0:N1} GB free - NOT ENOUGH for this preset" -f $dFree)
+    }
+    Line
+    Line '  Drives on this machine right now:'
+    Show-Drives -NeedGB $NeedGB
+    Line
+    Line '  Press Enter for the default, or type a folder - an external drive is'
+    Line '  the usual answer for a full delivery. It is created if it does not'
+    Line '  exist, and a folder named after the preset and the mask set is made'
+    Line '  inside it, so two runs can never overwrite each other.'
+    Line
+
+    while ($true) {
+        $ans = Read-Host 'Folder [Enter = default]'
+        if ($ans) { $ans = $ans.Trim().Trim('"').Trim() }
+        if (-not $ans) { return $Default }
+
+        # Explorer's "Copy as path" hands over a quoted string, hence the trim
+        # above. A relative path is resolved against the project rather than
+        # whatever directory this happened to be launched from.
+        try { $full = [IO.Path]::GetFullPath([IO.Path]::Combine($ProjectRoot, $ans)) }
+        catch { Bad ("not a usable path: {0}" -f $ans); Line; continue }
+
+        try { New-Item -ItemType Directory -Force $full -ErrorAction Stop | Out-Null }
+        catch {
+            Bad ("cannot create {0}" -f $full)
+            Line ("        {0}" -f $_.Exception.Message)
+            Line; continue
+        }
+
+        $probe = Join-Path $full ('.pxdl_write_test_{0}' -f [guid]::NewGuid().ToString('N'))
+        try {
+            [IO.File]::WriteAllText($probe, 'x')
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        } catch {
+            Bad ("that folder cannot be written to: {0}" -f $full)
+            Line ("        {0}" -f $_.Exception.Message)
+            Line; continue
+        }
+
+        $free = Get-FreeGB $full
+        if ($null -ne $free -and $free -le $NeedGB * 1.15) {
+            Warn ("{0:N1} GB free there, and this preset needs about {1:N1} GB." -f $free, $NeedGB)
+            Line '        Preflight will stop the run if it does not fit.'
+            $go = Read-Host '  Use it anyway? [y/N]'
+            if ($go -notmatch '^[Yy]') { Line; continue }
+        }
+        Good ("output goes to {0}" -f $full)
+        return $full
+    }
+}
+
 function Format-TC {
     # [int] in PowerShell ROUNDS, it does not truncate - so frame 3300 came out
     # as 2:50 instead of 1:50 and 5249 as 3:55 instead of 2:54.97. Every
@@ -121,6 +231,9 @@ function Format-TC {
 }
 
 # ---------------------------------------------------------------- the menu ---
+# Captured before $Preset is filled in below: it is what tells the destination
+# question further down whether there is anybody there to answer it.
+$interactive = (-not $Preset)
 if (-not $Preset) {
     Head 'PHOENIX DE LUMIERE  -  SW WALL  -  DELIVERY EXPORT'
     Line
@@ -178,14 +291,27 @@ $plate2 = $Cfg.plates[1]
 $w1 = [int]$plate1.w / $div; $h1 = [int]$plate1.h / $div
 $w2 = [int]$plate2.w / $div; $h2 = [int]$plate2.h / $div
 
-# The mask set is part of the output path AND part of every file name, so
-# rendering both one after the other cannot overwrite or confuse the two.
-$outDir = if ($Out) { $Out } else { Join-Path $DeliverRoot ("{0}_{1}" -f $Preset, $MaskTag) }
 # Both writes the canvas as well as the plates, which is roughly another 90% of
 # the pixels - it is one render, but it is not one file's worth of disk.
 $sizeMul = switch ($Layout) { 'Plates' { 1.0 } 'Stitched' { 0.9 } default { 1.9 } }
 $needGB = [math]::Round($P.MBPerFrame * $sizeMul * $count / ($div * $div) / 1024.0, 1)
 $mins   = [math]::Round($P.SecPerFrame * $count / ($div * $div) / 60.0, 0)
+
+# Asked here, after the size is known, rather than left to an environment
+# variable: a full delivery is ~51 GB, the system drive usually cannot take it,
+# and by the time preflight says so you have already picked a preset. Skipped
+# entirely when a path was passed in, or when nothing is driving this by hand.
+if (-not $Out -and -not $OutRoot -and $interactive) {
+    $OutRoot = Read-ExportRoot -Default $DeliverRoot -NeedGB $needGB
+}
+if (-not $OutRoot) { $OutRoot = $DeliverRoot }
+
+# The mask set is part of the output path AND part of every file name, so
+# rendering both one after the other cannot overwrite or confuse the two.
+# -Out is the exception: it means "exactly here", and makes no subfolder.
+$outDir = if ($Out) { $Out } else {
+    [IO.Path]::Combine($OutRoot, ("{0}_{1}" -f $Preset, $MaskTag))
+}
 
 Head "PLAN  -  $Preset"
 Line $P.What
@@ -230,7 +356,10 @@ $encNeeded = switch ($P.Codec) {
     'dnxhr_hqx'   { 'dnxhd' }     default       { 'libx264' }
 }
 if (Test-FFmpegEncoder $encNeeded) { Good "encoder $encNeeded" }
-else { $fail += "this ffmpeg has no $encNeeded encoder - get a full build from gyan.dev"; Bad "encoder $encNeeded missing" }
+else {
+    $fail += "this ffmpeg has no $encNeeded encoder. Run: .\_pipeline\scripts\get_ffmpeg.ps1"
+    Bad "encoder $encNeeded missing"
+}
 
 foreach ($k in 'SPSW1', 'SPSW2') {
     $src = Join-Path $ProjectRoot ($Cfg.source.$k -replace '/', '\')
@@ -282,13 +411,25 @@ if (Test-Path $arc) {
     }
 } else { $fail += 'noise_arc.csv missing - run: python analyse_arc.py'; Bad 'noise_arc.csv missing' }
 
-New-Item -ItemType Directory -Force $outDir | Out-Null
-$drive = (Get-Item $outDir).PSDrive
-$freeGB = [math]::Round($drive.Free / 1GB, 1)
-if ($freeGB -gt $needGB * 1.15) { Good ("disk    {0} GB free on {1}:, needs about {2} GB" -f $freeGB, $drive.Name, $needGB) }
-else {
-    $fail += ("not enough disk: {0} GB free on {1}:, this preset needs about {2} GB" -f $freeGB, $drive.Name, $needGB)
-    Bad ("disk    {0} GB free, needs about {1} GB" -f $freeGB, $needGB)
+try { New-Item -ItemType Directory -Force $outDir -ErrorAction Stop | Out-Null }
+catch {
+    $fail += ("the output folder cannot be created: {0} - {1}" -f $outDir, $_.Exception.Message)
+    Bad ("output  cannot create {0}" -f $outDir)
+}
+# Not (Get-Item $outDir).PSDrive any more: now that the destination can be any
+# folder that gets typed in, it can be a UNC path, which has no PSDrive - and
+# under Set-StrictMode reading .Free off that $null is a terminating error, so
+# the export would die here instead of reporting the problem.
+if (Test-Path $outDir -ErrorAction SilentlyContinue) {
+    $freeGB = Get-FreeGB $outDir
+    if ($null -eq $freeGB) {
+        Warn ("disk    free space cannot be measured at {0}, needs about {1} GB" -f $outDir, $needGB)
+    } elseif ($freeGB -gt $needGB * 1.15) {
+        Good ("disk    {0} GB free at {1}, needs about {2} GB" -f $freeGB, $outDir, $needGB)
+    } else {
+        $fail += ("not enough disk: {0} GB free at {1}, this preset needs about {2} GB. Run it again and give it a folder on a bigger drive when it asks." -f $freeGB, $outDir, $needGB)
+        Bad ("disk    {0} GB free, needs about {1} GB" -f $freeGB, $needGB)
+    }
 }
 
 Line

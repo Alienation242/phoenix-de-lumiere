@@ -101,20 +101,37 @@ things that merely need a decision.
 
 ## ffmpeg
 
+**One command on a new machine:**
+
+```powershell
+.\_pipeline\scripts\get_ffmpeg.ps1
+```
+
+It downloads the official Windows build (~106 MB), checks it against the
+SHA-256 the publisher lists, and puts `ffmpeg.exe` and `ffprobe.exe` in
+`_pipeline\bin\`. Nothing is installed, nothing goes on `PATH`, no admin
+rights. Run it again with `-Check` to see what the current one can encode, or
+`-Force` to replace it.
+
+The binary is ~100 MB, so it is **not** in git — `_pipeline\bin\` is
+gitignored. Copying the project folder to a drive carries it along; a
+`git clone` does not, so run the script there.
+
 The scripts look for ffmpeg in this order:
 
 1. `$env:PXDL_FFMPEG`
-2. `ffmpeg` on `PATH`
-3. `_pipeline\bin\ffmpeg.exe`
+2. `_pipeline\bin\ffmpeg.exe`
+3. `ffmpeg` on `PATH`
 4. any TouchDesigner install's `bin\ffmpeg.exe`
 5. `C:\ffmpeg\bin\ffmpeg.exe`
 
-**Get a full build.** The one bundled with TouchDesigner decodes everything but
-can only encode png / dpx / ffv1 / mjpeg / mpeg4 — no ProRes, no DNxHR, no
-H.264. Download the `full` build from gyan.dev or `win64-gpl` from BtbN, unzip
-it, and either put it on `PATH` or drop `ffmpeg.exe` into `_pipeline\bin\`.
-Dropping it in `_pipeline\bin\` means it travels with the project, which is the
-least surprising option for a render node.
+**`bin\` deliberately beats `PATH`.** Something put there was put there on
+purpose and travels with the project; an ffmpeg on `PATH` is whatever the
+machine happens to have. On the machine this was built on that was
+TouchDesigner's build, which decodes everything but can only encode
+png / dpx / ffv1 / mjpeg / mpeg4 — no ProRes, no DNxHR, no H.264. Every
+delivery preset stops at preflight with it, and previews fall back to mpeg4
+(49 MB where x264 makes about 5 MB).
 
 ---
 

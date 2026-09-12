@@ -39,6 +39,7 @@ output and never travel.
 python -m pip install moderngl
 
 cd _pipeline\scripts
+.\get_ffmpeg.ps1                     # a full ffmpeg into _pipeline\bin (~106 MB)
 .\check_environment.ps1              # VRAM, disk, ffmpeg, source files
 
 # point the big folders at fast storage
@@ -50,10 +51,21 @@ $env:PXDL_DELIVER_ROOT = "E:\PxDL\deliver"
 python render_shader.py --div 4 --start 5700 --count 900 --mp4 --preview-width 1224
 ```
 
-You also want a **full ffmpeg build** (gyan.dev or BtbN) on `PATH` or at
-`$env:PXDL_FFMPEG`. Without one there is no ProRes encoder, and previews fall
-back to mpeg4 — the full 80-second preview came out at 49 MB that way, where
-x264 at the same size would be a small fraction of it.
+You also need a **full ffmpeg build**, and there is a script for it:
+
+```powershell
+.\get_ffmpeg.ps1
+```
+
+It fetches the official Windows build, verifies it against the publisher's
+SHA-256 and drops it in `_pipeline\bin\`, which every script checks before
+`PATH`. Nothing is installed and no admin rights are needed. The binary is
+~100 MB so it is gitignored — **run this on every machine you clone to.**
+
+Without it there is no ProRes and no H.264 encoder: every delivery preset stops
+at preflight, and previews fall back to mpeg4 — the full 80-second preview came
+out at 49 MB that way, where x264 at the same size would be a small fraction of
+it.
 
 Nothing in the pipeline needs a licensed application.
 

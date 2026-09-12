@@ -87,16 +87,24 @@ FPS = CFG["fps"]
 
 
 def ffmpeg():
-    """Locate an ffmpeg binary. Explicit override wins, then PATH, then known installs."""
+    """Locate an ffmpeg binary. Explicit override wins, then _pipeline/bin, then PATH.
+
+    bin/ deliberately beats PATH: somebody put that one there on purpose and it
+    travels with the project, where an ffmpeg on PATH is whatever the machine
+    happens to have - on this one, TouchDesigner's build, which decodes
+    everything and encodes nothing we deliver in.
+    """
     env = os.environ.get("PXDL_FFMPEG")
     if env:
         if os.path.isfile(env):
             return env
         sys.exit("PXDL_FFMPEG is set but does not exist: %s" % env)
 
+    candidates = [os.path.join(PIPELINE, "bin", "ffmpeg.exe")]
     onpath = shutil.which("ffmpeg")
-    candidates = ([onpath] if onpath else []) + [
-        os.path.join(PIPELINE, "bin", "ffmpeg.exe"),
+    if onpath:
+        candidates.append(onpath)
+    candidates += [
         r"C:\Program Files\Derivative\TouchDesigner\bin\ffmpeg.exe",
         r"C:\ffmpeg\bin\ffmpeg.exe",
     ]
@@ -108,8 +116,11 @@ def ffmpeg():
         if c and os.path.isfile(c):
             return c
     sys.exit(
-        "ffmpeg not found. Put it on PATH, set PXDL_FFMPEG, or drop it in\n"
-        "  %s\\bin\\ffmpeg.exe" % PIPELINE
+        "ffmpeg not found. On any machine, run:\n"
+        "    .\\_pipeline\\scripts\\get_ffmpeg.ps1\n"
+        "which downloads a full build, verifies it and puts it in\n"
+        "  %s\\bin\\ffmpeg.exe\n"
+        "Or put one on PATH, or set PXDL_FFMPEG." % PIPELINE
     )
 
 

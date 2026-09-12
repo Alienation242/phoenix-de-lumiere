@@ -18,6 +18,52 @@ missing and refuses to report success if the plates do not verify.
 
 ---
 
+## Where the files go
+
+After the preset, the menu asks. **Press Enter for the default** — a `deliver`
+folder inside the project on `C:` — **or type any folder on any drive.**
+
+It prints what the preset needs and what every drive on the machine has free
+next to it, so the answer is usually obvious:
+
+```
+  This preset needs about 51,0 GB.
+
+  default   C:\Projekte\PhoenixDeLumiere\deliver
+            the deliver folder inside the project
+            44,6 GB free - NOT ENOUGH for this preset
+
+  Drives on this machine right now:
+    C:\  Fixed         44,6 GB free   too small for this preset
+    E:\  Removable   1.863,0 GB free   room for this preset
+
+  Folder [Enter = default]:
+```
+
+Whatever you give it is created if it does not exist, and is **proven writable
+before the render starts** — a full drive or a read-only share is caught in the
+prompt, not two hours later at the first encode. A path pasted from Explorer's
+*Copy as path* works with its quotes still on. If the folder is too small it
+says so and asks again; you can still insist.
+
+A folder named after the preset and the mask set (`Deliver_MASK-LAYER`) is made
+inside whatever you choose, so two runs can never overwrite each other.
+
+From the command line:
+
+```powershell
+.\_pipeline\scripts\export_delivery.ps1 -Preset Deliver -OutRoot E:\PxDL
+```
+
+`-OutRoot` is the same choice as the prompt — the preset folder is made inside
+it. `-Out` is the blunter one: it writes *exactly* there and makes no subfolder.
+Passing either skips the question, as does any run that gives `-Preset`, so
+scripted exports behave exactly as they did.
+
+`PXDL_DELIVER_ROOT` still works and becomes the default the prompt offers.
+
+---
+
 ## Two plates, or one stitched file?
 
 `-Layout` decides. Default is `Plates`.
@@ -157,7 +203,8 @@ failed run is safe to fix and repeat.
 
 | it says | it means |
 |---|---|
-| `not enough disk` | it tells you the number it needs. Point `PXDL_DELIVER_ROOT` at a bigger drive |
+| `not enough disk` | it tells you the number it needs. Run it again and give it a folder on a bigger drive when it asks — or set `PXDL_DELIVER_ROOT` |
+| `the output folder cannot be created` | the drive is not plugged in, or the path is not writable |
 | `noise_arc.csv only covers …` | run `python analyse_arc.py` (add `--hq` if using masters) |
 | `encoder … missing` | this ffmpeg is a partial build. Get a full one from gyan.dev |
 | `moderngl missing` | `python -m pip install moderngl` |

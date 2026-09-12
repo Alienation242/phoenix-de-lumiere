@@ -11,6 +11,9 @@
       $env:PXDL_DELIVER_ROOT = "E:\PxDL\deliver"
       $env:PXDL_WORK_ROOT    = "E:\PxDL\work"
       $env:PXDL_FFMPEG       = "E:\tools\ffmpeg\bin\ffmpeg.exe"
+
+  ffmpeg is looked for in _pipeline\bin\ before PATH. Run scripts\get_ffmpeg.ps1
+  once on a new machine to put a full build there.
 #>
 
 Set-StrictMode -Version Latest
@@ -64,25 +67,36 @@ function Find-FFmpeg {
         if (Test-Path $env:PXDL_FFMPEG) { return $env:PXDL_FFMPEG }
         throw "PXDL_FFMPEG is set but does not exist: $env:PXDL_FFMPEG"
     }
+    # _pipeline\bin\ comes FIRST, ahead of PATH. Somebody put that one there on
+    # purpose and it travels with the project; an ffmpeg on PATH is whatever the
+    # machine happens to have, and on this one that was TouchDesigner's build -
+    # which decodes everything and encodes nothing we deliver in. Losing two
+    # hours to that at preflight is how this order was chosen.
     $candidates = @(
-        (Join-Path $PipelineRoot 'bin\ffmpeg.exe'),
+        (Join-Path $PipelineRoot 'bin\ffmpeg.exe')
+    )
+    $onPath = Get-Command ffmpeg -ErrorAction SilentlyContinue
+    if ($onPath) { $candidates += $onPath.Source }
+    $candidates += @(
         'C:\Program Files\Derivative\TouchDesigner\bin\ffmpeg.exe',
         'C:\ffmpeg\bin\ffmpeg.exe'
     )
     # any TouchDesigner version
     Get-ChildItem 'C:\Program Files\Derivative' -Directory -ErrorAction SilentlyContinue |
         ForEach-Object { $candidates += (Join-Path $_.FullName 'bin\ffmpeg.exe') }
-    $onPath = Get-Command ffmpeg -ErrorAction SilentlyContinue
-    if ($onPath) { $candidates = @($onPath.Source) + $candidates }
 
     foreach ($c in $candidates) { if ($c -and (Test-Path $c)) { return $c } }
     throw @"
-ffmpeg not found. Do one of:
-  - put ffmpeg.exe on PATH
-  - set `$env:PXDL_FFMPEG to its full path
-  - drop it in $PipelineRoot\bin\ffmpeg.exe
-A full build (with x264 / ProRes) from gyan.dev or BtbN is worth having; the one
-bundled with TouchDesigner decodes everything but cannot encode H.264 or ProRes.
+ffmpeg not found. The easy fix, on any machine:
+
+    .\_pipeline\scripts\get_ffmpeg.ps1
+
+which downloads a full build, checks it against the publisher's checksum and
+puts it in $PipelineRoot\bin\. Nothing is installed and no admin is needed.
+
+Or put one on PATH yourself, or set `$env:PXDL_FFMPEG to its full path. It has
+to be a FULL build (x264 / ProRes) - the one bundled with TouchDesigner decodes
+everything but cannot encode anything this project delivers.
 "@
 }
 $script:FFmpegExe = Find-FFmpeg
