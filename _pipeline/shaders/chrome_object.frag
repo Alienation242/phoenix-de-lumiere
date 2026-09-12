@@ -237,9 +237,23 @@ void main() {
     // ceiling on the cast whatever the oil is doing underneath, so the effect
     // is the same strength on every object rather than a lottery decided by
     // which patch of film it happens to cross.
-    vec3 tint = clamp(oil / olum, vec3(0.35), vec3(1.90));
+    // Two changes, both aimed at the same thing: a submerged object should be
+    // a DIMMER, TINTED version of itself, not a flat shape wearing the film's
+    // colour.
+    //
+    //  - the clamp is tighter. [0.35, 1.90] still let a near-monochromatic film
+    //    hand over a 5x channel ratio before the mix, and at some thicknesses
+    //    the interference really is almost pure green.
+    //
+    //  - it keeps some of its OWN colour instead of collapsing to vec3(lum).
+    //    Flattening to grey first threw away every bit of reflection structure,
+    //    so what came back was a featureless silhouette in one hue - which is
+    //    what "they don't blend good" is. Retaining part of the metal means the
+    //    highlights and the horizon line survive the submersion.
+    vec3 tint = clamp(oil / olum, vec3(0.55), vec3(1.55));
     tint = mix(vec3(1.0), tint, uEmergeTint);
-    vec3 submerged = vec3(lum) * tint * (0.55 + 1.30 * olum);
+    vec3 ownish = mix(col, vec3(lum), 0.55);
+    vec3 submerged = ownish * tint * (0.55 + 1.30 * olum);
 
     col = mix(col, submerged, behind * uEmerge);
 

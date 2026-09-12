@@ -369,6 +369,8 @@ Z_NEAR_MIN = 700.0  # ... and the shyest one. Every object used to peak at the
                     # closest point and every single one passed in front. Giving
                     # each its own near point is what puts some of them behind.
 Z_LANE = 700.0      # spread of the per-object depth lane
+Z_CLIP = 8000.0     # ortho near/far. Wide enough that the separation pushes
+                    # below cannot send anything through the far plane.
 FAR_FRAC = 0.82     # Size while it is still outside, as a fraction of opening
                     # size. Nearly opening-sized on purpose: at 0.20 the object
                     # began as a distant speck and swelled toward the viewer
@@ -385,7 +387,7 @@ def pick_target_door(doors):
 
 
 def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
-                  speed=1.0, fit_margin=0.78):
+                  speed=1.0, fit_margin=0.62, door_pad=1.0):
     """Every object: in through a window, across the room, out through the big
     middle door. Out of the room is out of the piece - they do not come back."""
     rng = np.random.default_rng(seed)
@@ -397,7 +399,14 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
     doors = [o for o in openings if o["kind"] == "DOOR"]
     if not wins or not doors:
         return []
-    door = pick_target_door(doors)
+    # All three doors now, not just the middle one - but weighted towards it,
+    # because it is the biggest and it is the one the piece reads as the exit.
+    # Sorted by x so the weighting below is positional, not file order.
+    doors = sorted(doors, key=lambda d: d["cx"])
+    mid = min(range(len(doors)), key=lambda k: abs(doors[k]["cx"] - CW * 0.5))
+    door_bag = []
+    for k in range(len(doors)):
+        door_bag += [k] * (4 if k == mid else 1)
 
     # Spread the entry points across the full width. Twelve independent random
     # picks out of twenty-three windows clumps badly - measured, it put seven of
@@ -418,6 +427,8 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
     for i in range(count):
         wi = int((slots[i] + 0.5) / float(max(count, 1)) * len(wins))
         w = wins[min(wi, len(wins) - 1)]
+        _door_pref = door_bag[int(rng.integers(len(door_bag)))]
+        door = doors[_door_pref]
         dur = float(rng.uniform(19.0, 31.0)) / max(speed, 1e-3)
         # t0 is in SEGMENT time and must span the whole segment, not the chunk
         # being rendered. Spreading it over the chunk instead means a preview of
@@ -447,8 +458,8 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
 
         # One in four is a hero. Uniform sizing reads as wallpaper however big
         # you make it; the hierarchy is what makes any of them feel like events.
-        hero = (i % 4 == 0)
-        base = float(rng.uniform(0.95, 1.30)) * (1.55 if hero else 1.0)
+        hero = (i % 3 == 0)
+        base = float(rng.uniform(0.95, 1.30)) * (1.70 if hero else 1.0)
 
         # How close this one ever comes. Size follows it: something that stays
         # at the back of the room and is still drawn full size does not read as
@@ -456,7 +467,7 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
         near_f = float(rng.random())
 
         # size first, because the near depth has to clear the object's radius
-        _size = (max(220.0, min(680.0, float(w["w"]) * base))
+        _size = (max(230.0, min(780.0, float(w["w"]) * base))
                  * obj_scale * (0.62 + 0.38 * near_f))
 
         # Depth follows SIZE, not an independent roll. Rolling them separately
@@ -472,10 +483,16 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
         dx, dy = float(door["cx"]), float(door["cy"])
         side = 1.0 if wx < dx else -1.0
         # leave the window outward into the room, then swing down into the door
-        c1 = (wx + side * float(rng.uniform(400, 1400)),
-              wy + float(rng.uniform(300, 900)))
-        c2 = (dx - side * float(rng.uniform(700, 2100)),
-              dy - float(rng.uniform(800, 1500)))
+        # Kept as raw magnitudes, not baked into the points. The door can be
+        # reassigned after the fact to stop two objects using it at once, and
+        # that has to be doable WITHOUT drawing any more random numbers - one
+        # extra draw here would reshuffle every object downstream of it.
+        _c1a = float(rng.uniform(400, 1400))
+        _c1b = float(rng.uniform(300, 900))
+        _c2a = float(rng.uniform(700, 2100))
+        _c2b = float(rng.uniform(800, 1500))
+        c1 = (wx + side * _c1a, wy + _c1b)
+        c2 = (dx - side * _c2a, dy - _c2b)
 
         def wander():
             """Three incommensurate sines. Their sum never repeats inside the
@@ -488,6 +505,10 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
         def wsum(w):
             return sum(g for _, _, g in w) or 1.0
 
+        def _sp(mn, mx):
+            """A rate with a guaranteed minimum, and a random direction."""
+            return float(rng.uniform(mn, mx)) * (1.0 if rng.random() < 0.5 else -1.0)
+
         _wx, _wy = wander(), wander()
         # Which way it flies in along the wall, and which way it leaves. The
         # departure is the opposite hand, so it crosses rather than doubles back.
@@ -495,7 +516,8 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
         _app_dir = (_side, float(rng.uniform(-0.30, 0.30)))
         _dep_dir = (-_side, float(rng.uniform(-0.30, 0.30)))
         _app_dist = float(rng.uniform(0.60, 1.10)) * float(w["w"])
-        _dep_dist = float(rng.uniform(0.60, 1.10)) * float(door["w"])
+        _dep_mul = float(rng.uniform(0.60, 1.10))
+        _dep_dist = _dep_mul * float(door["w"])
 
         _ang = float(rng.uniform(0.0, 6.2832))
         _ang2 = _ang + math.pi + float(rng.uniform(-1.1, 1.1))
@@ -536,15 +558,27 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
             bob=float(rng.uniform(35.0, 95.0)) * drift,
             bob_w=float(rng.uniform(0.055, 0.15)),
             bob_p=float(rng.uniform(0, 6.283)),
-            # Faster than it looks written down: at the old rates a sphere
-            # turned about 7 degrees a second, which on a mirrored surface is
-            # not enough for the reflection to sweep and the shape to read as
-            # solid rather than painted.
-            spin=(float(rng.uniform(-0.32, 0.32)), float(rng.uniform(-0.42, 0.42)),
-                  float(rng.uniform(-0.22, 0.22))),
+            # Magnitude then sign, NOT a symmetric range. uniform(-0.32, 0.32)
+            # can hand out 0.01, and an object that barely turns reads as a
+            # still image pasted on the wall - which is what made the first
+            # torus dull. This guarantees every object is actually rotating.
+            spin=(_sp(0.16, 0.36), _sp(0.20, 0.46), _sp(0.11, 0.26)),
+            # ... and its own resting pose, so two tori are never presented at
+            # the same angle. A torus seen face-on is a flat ring and edge-on is
+            # a line; the interesting poses are in between.
+            rot_base=(float(rng.uniform(0.0, 6.2832)),
+                      float(rng.uniform(0.0, 6.2832)),
+                      float(rng.uniform(0.0, 6.2832))),
             # a persistent depth lane, so two objects rarely sit at the same z
             # and the separation solver almost never hits the degenerate case
             lane=float(rng.uniform(-1.0, 1.0)),
+            # A CONSTANT depth offset, filled in by the pass at the end of this
+            # function. Constant is the whole point: the camera is orthographic,
+            # so z costs nothing on screen - the object's path, size and timing
+            # are pixel-for-pixel unchanged and only who is in front changes.
+            # Nudging positions instead would be a repath, and repathing is
+            # visible however gently it is done.
+            z_push=0.0,
             # Which SIDE of its window it comes through, and which side of the
             # door it leaves by. Every object used to thread both openings dead
             # centre, which made twelve different journeys look like one. The
@@ -553,6 +587,8 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
             off_in=_oin, off_out=_oout,
             app_dir=_app_dir, dep_dir=_dep_dir,
             app_dist=_app_dist, dep_dist=_dep_dist,
+            _door_pref=_door_pref, _c1a=_c1a, _c1b=_c1b,
+            _c2a=_c2a, _c2b=_c2b, _dep_mul=_dep_mul,
             # precession: a slow wobble ON TOP of the spin. Nothing in the real
             # world rotates at a perfectly constant rate about a fixed axis, and
             # the eye reads that immediately as machinery.
@@ -563,6 +599,124 @@ def build_objects(openings, seed, count, t_lo, t_hi, obj_scale=1.0, drift=1.0,
             tint=np.array([rng.uniform(0.86, 1.0), rng.uniform(0.88, 1.0),
                            rng.uniform(0.90, 1.0)], "f4"),
         ))
+
+    # ---- no two objects may use the same doorway at the same time ----------
+    # Two shapes threading one door together reads as a mistake however well
+    # each one behaves on its own.
+    #
+    # Deliberately a POST-PASS that draws no random numbers. Resolving this
+    # inside the loop would need an extra draw, and every object built after it
+    # would get different sizes, timings and paths - so a moment that already
+    # works would be lost to fixing an unrelated one. This way each object keeps
+    # its window, its size, its timing and its shape; only which door it leaves
+    # by can change, and only when it has to.
+    # Windows first. There are 23 usable windows and more objects than that, so
+    # a few are reused - and two objects arriving through one window together
+    # is the same mistake as two leaving by one door. Resolved by sliding the
+    # later one a second or two further down the segment, which changes its
+    # timing and nothing else: not its size, its shape, its path or its window.
+    for wdx in set(int(o["win_idx"]) for o in objs):
+        share = sorted((o for o in objs if int(o["win_idx"]) == wdx),
+                       key=lambda z: z["t0"])
+        for k in range(1, len(share)):
+            prev, cur = share[k - 1], share[k]
+            need = prev["t0"] + 0.22 * prev["dur"] + door_pad
+            if cur["t0"] < need:
+                latest = t_hi - cur["dur"]
+                cur["t0"] = min(need, latest) if latest > cur["t0"] else cur["t0"]
+
+    def door_window(o):
+        d = o["dur"]
+        return (o["t0"] + 0.78 * d, o["t0"] + d)
+
+    def clashes(iv, booked, pad):
+        lo, hi = iv
+        return any(lo < b + pad and a < hi + pad for a, b in booked)
+
+    def use_door(o, dk):
+        dr = doors[dk]
+        dx, dy = float(dr["cx"]), float(dr["cy"])
+        side = 1.0 if o["p0"][0] < dx else -1.0
+        o["p2"] = (dx, dy)
+        o["c1"] = (o["p0"][0] + side * o["_c1a"], o["p0"][1] + o["_c1b"])
+        o["c2"] = (dx - side * o["_c2a"], dy - o["_c2b"])
+        o["door"] = (dx, dy, float(dr["w"]) * 0.5, float(dr["h"]) * 0.5)
+        o["door_idx"] = float(dr["index"])
+        o["fit_door"] = (min(float(dr["w"]), float(dr["h"])) * 0.5 * fit_margin
+                         / SHAPE_RADIUS.get(o["shape"], 1.4))
+        o["dep_dist"] = o["_dep_mul"] * float(dr["w"])
+
+    booked = {k: [] for k in range(len(doors))}
+    unresolved = 0
+    for o in sorted(objs, key=lambda z: z["t0"] + z["dur"]):
+        iv = door_window(o)
+        prefs = [o["_door_pref"]] + [k for k in range(len(doors))
+                                     if k != o["_door_pref"]]
+        pick = next((k for k in prefs if not clashes(iv, booked[k], door_pad)), None)
+        if pick is None:
+            pick = o["_door_pref"]
+            unresolved += 1
+        use_door(o, pick)
+        booked[pick].append(iv)
+    if unresolved:
+        print("warning   %d object(s) could not get a clear doorway - every door "
+              "was busy. raise --objects less, or shorten --door-pad" % unresolved)
+
+    # ---- overlap on screen, yes. occupy the same space, no. ----------------
+    # Two mirrored solids sliding through one another is the one thing that
+    # cannot be read as anything but a mistake. But pushing them apart in x or y
+    # at render time is a repath, and a repath is visible - that is exactly the
+    # bounce the old separation solver produced.
+    #
+    # So they are separated in DEPTH, by a constant chosen once, here. With an
+    # orthographic camera a change in z is invisible: the path, the size and the
+    # timing come out pixel for pixel identical. All that changes is which one
+    # is in front - and one of them ends up behind the pillar as a result, which
+    # is the reading we want anyway.
+    SAMPLES = 200
+    clashes = []
+    for ia in range(len(objs)):
+        for ib in range(ia + 1, len(objs)):
+            A, B = objs[ia], objs[ib]
+            lo = max(A["t0"], B["t0"])
+            hi = min(A["t0"] + A["dur"], B["t0"] + B["dur"])
+            if hi - lo < 0.2:
+                continue
+            need = 0.0
+            tight = None
+            for s in range(SAMPLES + 1):
+                t = lo + (hi - lo) * s / SAMPLES
+                sa, sb = object_state(A, t), object_state(B, t)
+                if sa is None or sb is None or sa[3] < 0.15 or sb[3] < 0.15:
+                    continue
+                ra = sa[2] * SHAPE_RADIUS.get(A["shape"], 1.4)
+                rb = sb[2] * SHAPE_RADIUS.get(B["shape"], 1.4)
+                flat = math.hypot(float(sa[0][0] - sb[0][0]),
+                                  float(sa[0][1] - sb[0][1]))
+                if flat >= ra + rb:
+                    continue                       # never overlaps on screen here
+                need = max(need, ra + rb)
+                # z WITHOUT the pushes, so the relaxation below can solve for them
+                dz = ((sa[1] + A["lane"] * Z_LANE) - (sb[1] + B["lane"] * Z_LANE))
+                if tight is None or abs(dz) < abs(tight):
+                    tight = dz
+            if need > 0.0 and tight is not None:
+                clashes.append([ia, ib, need * 1.15, tight])
+
+    for _ in range(12):
+        for ia, ib, want, base in clashes:
+            cur = base + objs[ia]["z_push"] - objs[ib]["z_push"]
+            if abs(cur) >= want:
+                continue
+            sgn = 1.0 if cur >= 0.0 else -1.0
+            fix = (want - abs(cur)) * 0.5 * sgn
+            objs[ia]["z_push"] += fix
+            objs[ib]["z_push"] -= fix
+    for o in objs:
+        o["z_push"] = max(-2600.0, min(2600.0, o["z_push"]))
+    if clashes:
+        print("depth     %d pair(s) separated in z so they cannot intersect"
+              % len(clashes))
     return objs
 
 
@@ -753,7 +907,7 @@ def object_state(o, t):
 
     alpha = smoother(pe, 0.0, 0.015) * (1.0 - smoother(pe, 0.99, 1.0))
 
-    z = wall_z + o["lane"] * Z_LANE
+    z = wall_z + o["lane"] * Z_LANE + o["z_push"]
     open_idx = o["win_idx"] if pe < 0.5 else o["door_idx"]
     return (np.array([x, y, z], "f4"), wall_z, scale, alpha, arc, clear, open_idx)
 
@@ -796,9 +950,8 @@ def main():
     ap.add_argument("--hq", action="store_true", help="use the ProRes masters from source_hq")
     ap.add_argument("--no-objects", action="store_true")
     ap.add_argument("--no-pillars", action="store_true")
-    ap.add_argument("--objects", type=int, default=12,
-                    help="total across the whole segment, NOT at once. 12 gives "
-                         "about 2-3 on screen at a time")
+    ap.add_argument("--objects", type=int, default=26,
+                    help="total across the whole segment, NOT at once")
     ap.add_argument("--obj-scale", type=float, default=1.0,
                     help="overall object size multiplier")
     ap.add_argument("--speed", type=float, default=1.0,
@@ -814,6 +967,9 @@ def main():
                          "untouched noise and a chunked render cannot repeat it). "
                          "With the segment starting at 1:50 this is the whole "
                          "1:50-2:00 approach")
+    ap.add_argument("--black-level", type=float, default=0.02,
+                    help="mean plate luma below which the plate counts as black. "
+                         "the wall is never lit when the shared image is not")
     ap.add_argument("--outro", type=float, default=10.0,
                     help="seconds before the segment OUT point over which the whole "
                          "wall dissolves back into the bare shared plate. Objects are "
@@ -821,7 +977,7 @@ def main():
     ap.add_argument("--emerge", type=float, default=0.85,
                     help="how completely the oil claims an object that is still "
                          "out beyond the wall")
-    ap.add_argument("--emerge-tint", type=float, default=0.40,
+    ap.add_argument("--emerge-tint", type=float, default=0.30,
                     help="how much of the oil's hue a submerged object takes. 0 keeps "
                          "it neutral grey, 1 gives it the film's full colour cast")
     ap.add_argument("--fog", type=float, default=0.48,
@@ -830,9 +986,15 @@ def main():
     ap.add_argument("--wall-fade", type=float, default=105.0,
                     help="softness of the wall plane, in canvas px. small is sharp; "
                          "0 would alias along the cut")
-    ap.add_argument("--separation", type=float, default=1.18,
-                    help="keep-apart margin as a multiple of the two radii. 0 disables, "
-                         "raise it to open the arrangement up further")
+    ap.add_argument("--door-pad", type=float, default=1.0,
+                    help="seconds of clear air required between two objects using "
+                         "the same doorway")
+    ap.add_argument("--separation", type=float, default=0.0,
+                    help="keep-apart margin as a multiple of the two radii. OFF by "
+                         "default: it kept objects from interpenetrating, but when "
+                         "two crowded it shoved them apart hard enough to read as a "
+                         "bounce. Overlapping on screen and sorting by depth looks "
+                         "right; being flicked apart does not. 1.18 turns it back on")
     ap.add_argument("--drift", type=float, default=1.0,
                     help="how far objects wander off their path. 0 = dead-straight "
                          "bezier, which reads as computed")
@@ -1061,16 +1223,52 @@ def main():
         vbo = ctx.buffer(data.tobytes())
         vaos[name] = ctx.vertex_array(obj_prog, [(vbo, "3f 3f 2x4", "aPos", "aNrm")])
 
+    # ---- the plate's own arc ----------------------------------------------
+    # Named plate_arc, not arc: object_state() returns a swell value that was
+    # also called arc, and unpacking it in this scope silently replaced this
+    # dict with a float. The frame it happened on rendered fine and the NEXT one
+    # died in arc.get(), which points nowhere near the actual mistake.
+    #
+    # Read before the objects are built, because where the plate ENDS decides
+    # when they have to have landed.
+    plate_arc = {}
+    arc_path = os.path.join(REF_ROOT, "noise_arc.csv")
+    if os.path.isfile(arc_path):
+        with open(arc_path) as fh:
+            for row in csv.DictReader(fh):
+                plate_arc[int(row["frame"])] = (float(row["mean_norm"]),
+                                                float(row["mean"]))
+
+    # ---- where does the plate stop? ---------------------------------------
+    # It does not fade out, it CUTS. Measured on this segment: mean luma 0.506
+    # at frame 7348 and 0.000 at 7349, and it strobes between 0.29 and 0.89 for
+    # the two seconds before that. Running our own dissolve on a clock meant we
+    # were still at half strength when it cut, amplifying the strobe and then
+    # painting a treatment onto pure black for five more seconds.
+    #
+    # So the dissolve ends where the PLATE ends, found from the arc rather than
+    # assumed. If the arc is missing we fall back to the segment out point.
+    seg_end = (seg["out"] - seg["in"]) / float(FPS)
+    cut_frame = seg["out"] + seg["handles"]
+    if plate_arc:
+        for f in range(seg["out"] + seg["handles"], seg["in"], -1):
+            if plate_arc.get(f, (0.0, 0.0))[1] > a.black_level:
+                cut_frame = f + 1
+                break
+    cut_t = min((cut_frame - seg["in"]) / float(FPS), seg_end)
+    print("plate ends %s (frame %d) - the dissolve lands there, not at the out point"
+          % ("%d:%05.2f" % (int(cut_frame / 30 // 60), (cut_frame / 30.0) % 60),
+             cut_frame))
+
     openings = json.load(open(os.path.join(REF_ROOT, "openings.json")))["openings"]
     doors = [o for o in openings if o["kind"] == "DOOR"]
     target = pick_target_door(doors)
     seg_lo = (seg["in"] - seg["handles"] - seg["in"]) / float(FPS)
-    # Everything must have LANDED before the dissolve begins, so the last ten
-    # seconds are nothing but the wall sinking back into the shared plate.
-    seg_hi = (seg["out"] - seg["in"]) / float(FPS) - a.outro
+    # Everything must have LANDED before the dissolve begins.
+    seg_hi = cut_t - a.outro
     objs = [] if a.no_objects else build_objects(
         openings, a.seed, a.objects, seg_lo, seg_hi, a.obj_scale, a.drift, a.speed,
-        a.fit_margin)
+        a.fit_margin, a.door_pad)
     print("objects   %d  ->  door %d at x %d (%dx%d)"
           % (len(objs), target["index"], target["cx"], target["w"], target["h"]))
 
@@ -1079,19 +1277,6 @@ def main():
     col0 = cols[0] if len(cols) > 0 else {"x": 0, "y": 0, "w": 1, "h": 1}
     col1 = cols[1] if len(cols) > 1 else col0
     print("pillars   %d columns" % len(cols))
-
-    # ---- the plate's own arc ----------------------------------------------
-    # Named plate_arc, not arc: object_state() returns a swell value that was
-    # also called arc, and unpacking it in this scope silently replaced this
-    # dict with a float. The frame it happened on rendered fine and the NEXT one
-    # died in arc.get(), which points nowhere near the actual mistake.
-    plate_arc = {}
-    arc_path = os.path.join(REF_ROOT, "noise_arc.csv")
-    if os.path.isfile(arc_path):
-        with open(arc_path) as fh:
-            for row in csv.DictReader(fh):
-                plate_arc[int(row["frame"])] = (float(row["mean_norm"]),
-                                                float(row["mean"]))
 
     # ---- noise stream -----------------------------------------------------
     v1 = source("SPSW1") if not a.hq else None
@@ -1186,7 +1371,7 @@ def main():
     # the wall while leaving the background correct. The objects then travel
     # doors-to-windows on screen no matter what the paths say, which looks
     # plausible enough to miss.
-    proj = ortho(0, W, 0, H, -4000, 4000)
+    proj = ortho(0, W, 0, H, -Z_CLIP, Z_CLIP)
 
     for k in range(a.count):
         buf = noise.stdout.read(nbytes)
@@ -1209,9 +1394,15 @@ def main():
         # into it over 4:00-4:10, so this surface starts and finishes on exactly
         # the image the other eleven are showing, and whatever the piece does
         # next - the black - happens from a clean common frame.
-        seg_end = (seg["out"] - seg["in"]) / float(FPS)
         scene = (smoother(t, 0.0, max(a.intro, 1e-3))
-                 * (1.0 - smoother(t, seg_end - max(a.outro, 1e-3), seg_end)))
+                 * (1.0 - smoother(t, cut_t - max(a.outro, 1e-3), cut_t)))
+
+        # Belt and braces. Once the dissolve has begun, if the plate itself has
+        # gone black then so have we - immediately, on the same frame, however
+        # the timing was set. The wall is never lit when the shared image is not.
+        past_outro = smoother(t, cut_t - a.outro - 1.0, cut_t - a.outro)
+        plate_dark = 1.0 - smooth(plate_mean, a.black_level, a.black_level * 5.0)
+        scene *= 1.0 - past_outro * plate_dark
 
         # The camera settles with it. Handing over on the shared plate while the
         # viewpoint is still swung 200 px off centre would put this wall's idea
@@ -1337,10 +1528,10 @@ def main():
                 z_bias = float(pos[2]) - L["wall_z"]
                 pos[2] = pos[2] / float(a.div)
                 sc = scale / a.div
-                rw, rp = o["rot_w"], o["rot_p"]
-                rot = (o["spin"][0] * t + 0.55 * math.sin(rw[0] * t + rp[0]),
-                       o["spin"][1] * t + 0.65 * math.sin(rw[1] * t + rp[1]),
-                       o["spin"][2] * t + 0.40 * math.sin(rw[2] * t + rp[2]))
+                rw, rp, rb = o["rot_w"], o["rot_p"], o["rot_base"]
+                rot = (rb[0] + o["spin"][0] * t + 0.55 * math.sin(rw[0] * t + rp[0]),
+                       rb[1] + o["spin"][1] * t + 0.65 * math.sin(rw[1] * t + rp[1]),
+                       rb[2] + o["spin"][2] * t + 0.40 * math.sin(rw[2] * t + rp[2]))
                 m = model_matrix(pos, sc, rot)
                 setu(obj_prog, "uMVP", tuple((proj @ m).T.flatten()))
                 setu(obj_prog, "uModel", tuple(m.T.flatten()))
@@ -1362,8 +1553,13 @@ def main():
             # object's current depth would be just as correct and would pop the
             # moment it crossed the plane, which is worse. Since depth follows
             # size, this is still "the big ones come past in front".
-            behind = [L for L in live if L["o"]["z_near"] <= a.pillar_z]
-            front = [L for L in live if L["o"]["z_near"] > a.pillar_z]
+            # z_push is included, so an object shoved to the back to avoid an
+            # intersection also ends up behind the pillar - which is exactly the
+            # "one in front, one behind" reading, arrived at for free.
+            def side(L):
+                return L["o"]["z_near"] + L["o"]["z_push"]
+            behind = [L for L in live if side(L) <= a.pillar_z]
+            front = [L for L in live if side(L) > a.pillar_z]
             draw_objects(behind)
         # ---- pillars, in the SAME depth buffer as the objects -------------
         # Not a layer pasted over the top: a real occluder at a real depth. An
@@ -1392,7 +1588,7 @@ def main():
             # units. At --div 2 a pillar asked for at 1500 was competing as if it
             # were at 3000, which is in front of very nearly everything. It would
             # have come out right at --div 1 and wrong in every single preview.
-            setu(pil_prog, "uQuadZ", -(a.pillar_z / float(a.div)) / 4000.0)
+            setu(pil_prog, "uQuadZ", -(a.pillar_z / float(a.div)) / Z_CLIP)
             setu(pil_prog, "uRes", (float(W), float(H)))
             setu(pil_prog, "uTime", t)
             setu(pil_prog, "uArc", mean_norm)
