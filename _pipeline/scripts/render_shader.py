@@ -1003,23 +1003,151 @@ def object_state(o, t):
 
 LOOK_PATH = os.path.join(PIPELINE, "look.json")
 
+# ------------------------------------------------------------------- look ----
+# look.json is what tune_look.py dialled in. A setting is either a plain value,
+# or an object with "keys" - [frame, value] pairs interpolated across the
+# segment, so the look can MOVE over the eighty seconds:
+#
+#   "sky_gain": 2.4,
+#   "oil_gain": {"ease": "smooth",
+#                "keys": [[4800, 1.2], [6060, 4.0], [6930, 9.5]]},
+#   "color":    {"keys": [[3300, "0.38,0.52,0.85"], [7200, "0.90,0.30,0.20"]]}
+#
+# Plain values become argparse defaults. Keyed ones are evaluated per frame in
+# the render loop - which already sets every look uniform once per frame for
+# its own reasons, so animating them costs a dictionary lookup and nothing else.
+#
+# Keys are argparse dests with underscores ("sky_gain", not "--sky-gain"),
+# because that is what set_defaults and setattr want.
 
-def load_look():
-    """What tune_look.py saved, as {dest: value}. Returns ({}, reason) on trouble.
+EASES = ("hold", "linear", "smooth", "ease-in", "ease-out")
 
-    Keys are argparse dests with underscores - "sky_gain", not "--sky-gain" -
-    because that is what set_defaults wants. tune_look.py writes them that way.
+
+def ease_at(kind, x):
+    """Where along a segment the value is, given how far along in TIME we are.
+
+    x and the result are both 0..1. 'hold' is what makes a step: it stays on
+    the left-hand key until the next one takes over.
     """
-    if not os.path.isfile(LOOK_PATH):
-        return {}, None
+    if kind == "hold":
+        return 0.0
+    if kind == "linear":
+        return x
+    if kind == "ease-in":
+        return x * x
+    if kind == "ease-out":
+        return 1.0 - (1.0 - x) * (1.0 - x)
+    return x * x * (3.0 - 2.0 * x)          # smooth, and the default
+
+
+class Track(object):
+    """One animated setting: [frame, value] keys, and how to get between them.
+
+    A value is either a number or one of the comma strings the command line
+    uses for colours and ranges ("0.38,0.52,0.85"). Those interpolate per
+    component and come back out in the same form, so nothing downstream can
+    tell an animated colour from a fixed one.
+
+    A key may carry its own easing as a third element - [frame, value, "hold"] -
+    which applies to the segment STARTING at that key. That is what lets one
+    transition snap while the next one glides.
+    """
+
+    def __init__(self, name, keys, ease="smooth"):
+        if not keys:
+            raise ValueError("no keys")
+        self.name = name
+        self.ease = ease if ease in EASES else "smooth"
+        self.text = isinstance(keys[0][1], str)
+        self.keys = sorted(
+            ((int(k[0]), self._nums(k[1]), (k[2] if len(k) > 2 else None))
+             for k in keys),
+            key=lambda k: k[0])
+
+    @staticmethod
+    def _nums(v):
+        if isinstance(v, str):
+            return [float(x) for x in v.split(",")]
+        if isinstance(v, (list, tuple)):
+            return [float(x) for x in v]
+        return [float(v)]
+
+    def _out(self, nums):
+        return ",".join("%.4f" % n for n in nums) if self.text else nums[0]
+
+    def at(self, frame):
+        ks = self.keys
+        # Outside the keyed range the first and last values simply hold. The
+        # alternative - extrapolating - would run the look off somewhere nobody
+        # chose, in the handles, where this surface must match the other eleven.
+        if frame <= ks[0][0]:
+            return self._out(ks[0][1])
+        if frame >= ks[-1][0]:
+            return self._out(ks[-1][1])
+        for i in range(len(ks) - 1):
+            f0, v0, e0 = ks[i]
+            f1, v1, _ = ks[i + 1]
+            if f0 <= frame <= f1:
+                span = float(f1 - f0)
+                u = ease_at(e0 or self.ease,
+                            0.0 if span <= 0 else (frame - f0) / span)
+                n = min(len(v0), len(v1))
+                return self._out([v0[j] + (v1[j] - v0[j]) * u for j in range(n)])
+        return self._out(ks[-1][1])
+
+    def describe(self):
+        return "%s  %d keys  %d..%d  %s" % (
+            self.name, len(self.keys), self.keys[0][0], self.keys[-1][0],
+            self.ease)
+
+
+def look_file_from_argv(argv):
+    """--look PATH, read before argparse exists, because the file it names has
+    to be loaded BEFORE parse_args in order to become the defaults."""
+    if "--look" in argv:
+        i = argv.index("--look")
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    for s in argv:
+        if s.startswith("--look="):
+            return s.split("=", 1)[1]
+    return None
+
+
+def load_look(path=None):
+    """(plain values, {name: Track}, problem). Never raises.
+
+    A look file that cannot be read must not be able to stop a delivery render
+    at two in the morning - the caller prints the problem and carries on with
+    the built-in look.
+    """
+    path = path or LOOK_PATH
+    if not os.path.isfile(path):
+        return {}, {}, None
     try:
-        with open(LOOK_PATH, "r") as fh:
+        with open(path, "r") as fh:
             d = json.load(fh)
     except Exception as e:
-        return {}, str(e)
+        return {}, {}, str(e)
     if not isinstance(d, dict):
-        return {}, "the file is not a JSON object"
-    return {k: v for k, v in d.items() if not k.startswith("_")}, None
+        return {}, {}, "the file is not a JSON object"
+
+    static, tracks = {}, {}
+    for k, v in d.items():
+        if k.startswith("_"):
+            continue
+        if isinstance(v, dict) and v.get("keys"):
+            try:
+                tr = Track(k, v["keys"], v.get("ease", "smooth"))
+            except (TypeError, ValueError, IndexError, KeyError) as e:
+                return {}, {}, "'%s' has unusable keys (%s)" % (k, e)
+            tracks[k] = tr
+            # Anything read once before the render loop - the colour strings
+            # get parsed there - needs a sensible value to start from.
+            static[k] = tr.at(tr.keys[0][0])
+        else:
+            static[k] = v
+    return static, tracks, None
 
 
 def load_gray(ff, path, w, h):
@@ -1252,21 +1380,34 @@ def main():
                          "of the numbers that would drift out of step")
     ap.add_argument("--no-look", action="store_true",
                     help="ignore look.json and use the built-in defaults")
+    ap.add_argument("--look", default="",
+                    help="read the look from this file instead of "
+                         "_pipeline/look.json. tune_look.py previews through "
+                         "this, so a preview goes down exactly the same path "
+                         "as the delivery - including animated settings, which "
+                         "no command line could express")
 
-    # look.json is where tune_look.py saves what you dialled in. Applied as
-    # DEFAULTS, so anything passed on the command line still wins, and so the
-    # delivery export picks the tuned look up without needing to know about it -
-    # sliders whose values the delivery ignored would be worse than no sliders.
-    look, look_err = load_look()
+    # look.json is where tune_look.py saves what you dialled in. Plain values
+    # are applied as argparse DEFAULTS, so anything passed on the command line
+    # still wins and the delivery export picks the tuned look up without needing
+    # to know about it - sliders whose values the delivery ignored would be
+    # worse than no sliders. Animated settings become tracks, evaluated per
+    # frame down in the render loop.
+    look_file = look_file_from_argv(sys.argv) or LOOK_PATH
+    look, tracks, look_err = load_look(look_file)
     look_applied = 0
-    if look and "--no-look" not in sys.argv and "--print-defaults" not in sys.argv:
+    if (look or tracks) and "--no-look" not in sys.argv \
+            and "--print-defaults" not in sys.argv:
         known = {act.dest for act in ap._actions}
         unknown = sorted(k for k in look if k not in known)
         use = {k: v for k, v in look.items() if k in known}
         ap.set_defaults(**use)
         look_applied = len(use)
+        tracks = {k: v for k, v in tracks.items() if k in known}
         if unknown:
-            print("look.json: ignoring unknown setting(s): %s" % ", ".join(unknown))
+            print("look: ignoring unknown setting(s): %s" % ", ".join(unknown))
+    else:
+        tracks = {}
 
     a = ap.parse_args()
 
@@ -1276,9 +1417,26 @@ def main():
     if look_err:
         # Never fatal. A broken look file must not be able to stop a delivery
         # render at two in the morning.
-        print("look.json could not be read (%s) - using built-in defaults" % look_err)
-    elif look_applied:
-        print("look      %d setting(s) from %s" % (look_applied, LOOK_PATH))
+        print("look could not be read (%s) - using built-in defaults" % look_err)
+    elif look_applied or tracks:
+        print("look      %d setting(s) from %s" % (look_applied, look_file))
+        for name in sorted(tracks):
+            print("          animated  %s" % tracks[name].describe())
+
+    # A setting that is BOTH animated and given on the command line: the flag
+    # would be silently overwritten every frame by the track. Say so once, here,
+    # rather than leaving somebody to wonder why their flag did nothing.
+    if tracks:
+        given = set()
+        for s in sys.argv[1:]:
+            if s.startswith("--"):
+                given.add(s[2:].split("=")[0].replace("-", "_"))
+        clash = sorted(given & set(tracks))
+        if clash:
+            print("          NOTE: %s %s animated in the look file, so the "
+                  "flag on the command line is ignored"
+                  % (", ".join("--" + c.replace("_", "-") for c in clash),
+                     "is" if len(clash) == 1 else "are"))
 
     if not a.png and not a.mp4:
         a.mp4 = True
@@ -1662,6 +1820,21 @@ def main():
         t_plate.write(buf)
 
         frame = a.start + k
+
+        # Animated settings, evaluated for THIS frame. The uniform block below
+        # already reads a.sky_gain and friends once per frame, so moving them
+        # here is all it takes - nothing downstream knows the difference.
+        if tracks:
+            for _name, _tr in tracks.items():
+                setattr(a, _name, _tr.at(frame))
+            # These four are parsed out of their comma strings once, before the
+            # loop. An animated one has to be re-parsed here or its uniform
+            # never moves. Four tiny arrays against a 25 Mpx frame: free.
+            col = np.array([float(x) for x in a.color.split(",")], "f4")
+            stone = np.array([float(x) for x in a.stone.split(",")], "f4")
+            door_tone = np.array([float(x) for x in a.door_tone.split(",")], "f4")
+            film = [float(x) for x in a.film.split(",")]
+
         # ABSOLUTE segment time, not chunk time. If this were k/FPS the clouds
         # and the camera would restart at every chunk boundary and a chunked
         # final render would visibly jump.

@@ -11,12 +11,13 @@
   :root{
     --bg:#131417; --panel:#1a1c21; --line:#2b2f37; --ink:#e6e8ec;
     --dim:#8d939e; --accent:#7fb2ff; --warn:#ffb86b; --bad:#ff7b72;
+    --key:#ffb86b;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);
        font:13px/1.45 -apple-system,Segoe UI,Roboto,system-ui,sans-serif}
   .wrap{display:flex;min-height:100vh;align-items:flex-start}
-  .side{width:400px;flex:0 0 400px;border-right:1px solid var(--line);
+  .side{width:430px;flex:0 0 430px;border-right:1px solid var(--line);
         padding:14px 14px 60px;height:100vh;overflow-y:auto}
   .main{flex:1;padding:14px;position:sticky;top:0}
   h1{font-size:14px;margin:0 0 2px;letter-spacing:.02em}
@@ -24,13 +25,16 @@
   h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;
      color:var(--dim);margin:20px 0 8px;border-bottom:1px solid var(--line);
      padding-bottom:5px}
-  .row{margin:9px 0}
-  .lab{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
-  .lab b{font-weight:600;font-size:12px}
-  .lab .v{font-variant-numeric:tabular-nums;color:var(--accent);font-size:12px}
+  .row{margin:9px 0;padding:4px 6px;border-radius:6px;border:1px solid transparent}
+  .row.anim{border-color:#4a3a1e;background:#1d1a14}
+  .lab{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
+  .lab b{font-weight:600;font-size:12px;cursor:pointer}
+  .lab .v{font-variant-numeric:tabular-nums;color:var(--accent);font-size:12px;
+          margin-left:auto}
   .lab .v.mod{color:var(--warn)}
   .blurb{color:var(--dim);font-size:11px;margin:1px 0 3px}
   input[type=range]{width:100%;margin:2px 0;accent-color:var(--accent)}
+  .row.anim input[type=range]{accent-color:var(--key)}
   .rgb{display:flex;gap:8px;align-items:center}
   .rgb .sw{width:30px;height:30px;border-radius:5px;border:1px solid var(--line);
            flex:0 0 30px}
@@ -45,10 +49,29 @@
   button:hover{border-color:var(--accent)}
   button.go{background:#22406e;border-color:#2f5da0}
   button.warn{border-color:#5a4520}
+  .diamond{padding:1px 7px;font-size:13px;line-height:1.3;color:var(--dim);
+           border-color:var(--line)}
+  .diamond.on{color:var(--key);border-color:#6b5326;background:#241d10}
   select{background:var(--panel);color:var(--ink);border:1px solid var(--line);
          border-radius:5px;padding:4px 6px;font:inherit}
+  select.mini{padding:1px 3px;font-size:10px}
   label.ck{display:inline-flex;gap:5px;align-items:center;color:var(--dim);
            cursor:pointer;user-select:none}
+  /* keyframes */
+  .keys{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:4px 0 0}
+  .chip{display:inline-flex;align-items:center;gap:3px;background:#241d10;
+        border:1px solid #4a3a1e;border-radius:4px;padding:1px 4px;
+        font-size:10px;font-variant-numeric:tabular-nums}
+  .chip .go{background:none;border:none;color:var(--key);cursor:pointer;
+            padding:0 1px;font-size:10px}
+  .chip .x{background:none;border:none;color:var(--dim);cursor:pointer;
+           padding:0 1px}
+  .chip .x:hover{color:var(--bad)}
+  .chip.now{outline:1px solid var(--key)}
+  canvas.curve{width:100%;height:46px;display:block;margin-top:4px;
+               background:#0e0f12;border:1px solid var(--line);border-radius:4px}
+  .trackbar{display:flex;gap:5px;align-items:center;margin-top:4px;
+            color:var(--dim);font-size:10px}
   .shot{background:#000;border:1px solid var(--line);border-radius:6px;
         overflow:auto;min-height:220px;display:flex;align-items:center;
         justify-content:center;position:relative}
@@ -70,6 +93,8 @@
   .note{color:var(--dim);font-size:11px;margin:6px 0}
   .tc{font-variant-numeric:tabular-nums}
   .saved{color:var(--warn)}
+  kbd{background:#0e0f12;border:1px solid var(--line);border-radius:3px;
+      padding:0 4px;font-size:10px;font-family:inherit}
 </style>
 </head>
 <body>
@@ -85,9 +110,10 @@
       <button class="warn" id="revert">Delete look.json</button>
     </div>
     <div class="note">
-      Save writes <code>look.json</code>. The renderer loads it as its
-      defaults, so <b>EXPORT.cmd uses it too</b>. Double-click any slider's
-      name to put that one back.
+      <b>◆</b> sets a keyframe at the current frame. Once a setting has one,
+      it turns amber and its slider writes a key wherever the playhead is —
+      move the frame, move the slider, that is a second key. Double-click a
+      name to put it back to default and drop its keys.
     </div>
 
     <div id="groups"></div>
@@ -138,33 +164,98 @@
 <script>
 'use strict';
 var S = null;            // /state
-var P = {};              // current values, name -> number | [r,g,b] | [lo,hi]
-var els = {};            // name -> refresh function
-var inFlight = false, dirty = false, lastMs = 0;
+var P = {};              // constant values,  name -> number | [r,g,b] | [lo,hi]
+var T = {};              // animated ones,    name -> {ease, keys:[[frame,value,ease?]]}
+var ITEM = {};           // name -> the slider spec
+var els = {};            // name -> redraw this row
+var inFlight = false, dirty = false;
 
 function $(id){ return document.getElementById(id); }
+function frameNow(){ return Number($('frame').value); }
+function eq(a,b){ return JSON.stringify(a) === JSON.stringify(b); }
 
 function tc(f){
   var s = f / S.frames.fps, m = Math.floor(s/60);
   return m + ':' + (s - m*60).toFixed(2).padStart(5,'0');
 }
-function eq(a,b){ return JSON.stringify(a) === JSON.stringify(b); }
 
-/* The renderer's defaults arrive as the strings its command line uses -
-   "0.38,0.52,0.85" - so unpack those into numbers for the sliders. */
+/* ---------------------------------------------------------------- easing --
+   These four must match ease_at() in render_shader.py. They only drive what
+   the sliders and the curve graph SAY - the picture always comes back from
+   the real renderer, so a disagreement here could never reach the delivery,
+   only mislead you about it. Which is reason enough to keep them identical. */
+function easeAt(kind, x){
+  if (kind === 'hold') return 0;
+  if (kind === 'linear') return x;
+  if (kind === 'ease-in') return x * x;
+  if (kind === 'ease-out') return 1 - (1-x) * (1-x);
+  return x * x * (3 - 2*x);                       // smooth, and the default
+}
+function nums(v){ return Array.isArray(v) ? v.slice() : [Number(v)]; }
+
+function sortKeys(tr){ tr.keys.sort(function(a,b){ return a[0] - b[0]; }); }
+
+function trackAt(tr, frame){
+  var ks = tr.keys;
+  if (!ks.length) return null;
+  if (frame <= ks[0][0]) return ks[0][1];
+  if (frame >= ks[ks.length-1][0]) return ks[ks.length-1][1];
+  for (var i = 0; i < ks.length - 1; i++){
+    var f0 = ks[i][0], f1 = ks[i+1][0];
+    if (frame >= f0 && frame <= f1){
+      var v0 = nums(ks[i][1]), v1 = nums(ks[i+1][1]);
+      var span = f1 - f0;
+      var u = easeAt(ks[i][2] || tr.ease, span <= 0 ? 0 : (frame - f0) / span);
+      var out = v0.map(function(a, j){ return a + (v1[j] - a) * u; });
+      return Array.isArray(ks[i][1]) ? out : out[0];
+    }
+  }
+  return ks[ks.length-1][1];
+}
+
+/* The value a setting HAS right now: off its track if it is animated,
+   otherwise the constant. Everything that draws or sends uses this. */
+function valueOf(name){
+  return T[name] ? trackAt(T[name], frameNow()) : P[name];
+}
+
+/* Moving a slider on an animated setting writes a key where the playhead is.
+   That is the behaviour that makes "add a keyframe" mean what people expect:
+   go to a time, move the thing, it is keyed there. */
+function setValue(name, v){
+  if (T[name]) putKey(name, frameNow(), v);
+  else P[name] = v;
+}
+function putKey(name, frame, v){
+  var tr = T[name], hit = null;
+  tr.keys.forEach(function(k){ if (k[0] === frame) hit = k; });
+  if (hit) hit[1] = v;
+  else tr.keys.push([frame, v]);
+  sortKeys(tr);
+}
+function startTrack(name){
+  T[name] = {ease: 'smooth', keys: [[frameNow(), valueOf(name)]]};
+}
+function dropTrack(name){
+  var last = valueOf(name);          // keep what is on screen as the constant
+  delete T[name];
+  P[name] = last;
+}
+
 function parseDefault(it){
   if (it.kind === 'rgb' || it.kind === 'pair')
     return String(it.default).split(',').map(Number);
   return Number(it.default);
 }
 function fmt(it, v){
-  if (it.kind === 'rgb') return v.map(function(x){ return x.toFixed(3); }).join(', ');
-  if (it.kind === 'pair') return v[0] + '–' + v[1] + ' nm';
+  if (v === null || v === undefined) return '—';
+  if (it.kind === 'rgb') return nums(v).map(function(x){ return x.toFixed(3); }).join(', ');
+  if (it.kind === 'pair') return Math.round(nums(v)[0]) + '–' + Math.round(nums(v)[1]) + ' nm';
   if (it.kind === 'int') return String(Math.round(v));
   return Number(v).toFixed(2);
 }
 function hex(rgb){
-  return '#' + rgb.map(function(x){
+  return '#' + nums(rgb).map(function(x){
     var n = Math.max(0, Math.min(255, Math.round(x * 255)));
     return n.toString(16).padStart(2,'0');
   }).join('');
@@ -173,30 +264,94 @@ function fromHex(h){
   return [1,3,5].map(function(i){ return parseInt(h.substr(i,2),16)/255; });
 }
 
-function build(){
-  var host = $('groups');
-  host.innerHTML = '';
-  S.groups.forEach(function(g){
-    var h = document.createElement('h2');
-    h.textContent = g.title;
-    host.appendChild(h);
-    g.items.forEach(function(it){ host.appendChild(control(it)); });
+/* ------------------------------------------------------------ the curve -- */
+function drawCurve(cv, it){
+  var tr = T[it.name];
+  var ctx = cv.getContext('2d');
+  var w = cv.clientWidth, h = cv.clientHeight, dpr = window.devicePixelRatio || 1;
+  cv.width = Math.max(1, Math.round(w * dpr));
+  cv.height = Math.max(1, Math.round(h * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!tr || !tr.keys.length) return;
+
+  var lo = S.frames.lo, hi = S.frames.hi;
+  var comps = nums(tr.keys[0][1]).length;
+  var vmin = Infinity, vmax = -Infinity;
+  tr.keys.forEach(function(k){
+    nums(k[1]).forEach(function(x){
+      if (x < vmin) vmin = x;
+      if (x > vmax) vmax = x;
+    });
   });
+  if (vmax - vmin < 1e-9){ vmin -= 0.5; vmax += 0.5; }
+  var pad = (vmax - vmin) * 0.18;
+  vmin -= pad; vmax += pad;
+
+  var X = function(f){ return (f - lo) / (hi - lo) * (w - 2) + 1; };
+  var Y = function(v){ return h - 3 - (v - vmin) / (vmax - vmin) * (h - 6); };
+
+  // the moments worth judging at, so the curve is read against the piece
+  ctx.strokeStyle = '#23262d'; ctx.lineWidth = 1;
+  S.marks.forEach(function(m){
+    ctx.beginPath(); ctx.moveTo(X(m.frame), 0); ctx.lineTo(X(m.frame), h); ctx.stroke();
+  });
+
+  var colours = comps === 3 ? ['#ff7b72','#7ee787','#7fb2ff']
+              : comps === 2 ? ['#ffb86b','#7fb2ff'] : ['#ffb86b'];
+  for (var c = 0; c < comps; c++){
+    ctx.strokeStyle = colours[c] || '#ffb86b';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (var px = 0; px <= w; px += 2){
+      var f = lo + (px / w) * (hi - lo);
+      var v = nums(trackAt(tr, f))[c];
+      var y = Y(v);
+      if (px === 0) ctx.moveTo(X(f), y); else ctx.lineTo(X(f), y);
+    }
+    ctx.stroke();
+    ctx.fillStyle = colours[c] || '#ffb86b';
+    tr.keys.forEach(function(k){
+      ctx.beginPath();
+      ctx.arc(X(k[0]), Y(nums(k[1])[c]), 2.6, 0, Math.PI*2);
+      ctx.fill();
+    });
+  }
+
+  ctx.strokeStyle = '#e6e8ec'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(X(frameNow()), 0); ctx.lineTo(X(frameNow()), h);
+  ctx.stroke();
 }
 
+/* ------------------------------------------------------------- one row --- */
 function control(it){
+  ITEM[it.name] = it;
   var wrap = document.createElement('div');
   wrap.className = 'row';
+
   var lab = document.createElement('div');
   lab.className = 'lab';
   var name = document.createElement('b');
   name.textContent = it.flag.replace(/^--/,'');
-  name.title = 'double-click to put this back to ' + fmt(it, parseDefault(it));
-  name.style.cursor = 'pointer';
-  name.ondblclick = function(){ P[it.name] = parseDefault(it); els[it.name](); queue(); };
+  name.title = 'double-click: back to ' + fmt(it, parseDefault(it)) + ', keys dropped';
+  name.ondblclick = function(){
+    delete T[it.name];
+    P[it.name] = parseDefault(it);
+    els[it.name](); queue();
+  };
+  var dia = document.createElement('button');
+  dia.className = 'diamond';
+  dia.textContent = '◆';
+  dia.title = 'keyframe this setting at the current frame';
+  dia.onclick = function(){
+    if (!T[it.name]) startTrack(it.name);
+    else putKey(it.name, frameNow(), valueOf(it.name));
+    els[it.name](); queue();
+  };
   var val = document.createElement('span');
   val.className = 'v';
-  lab.appendChild(name); lab.appendChild(val);
+  lab.appendChild(name); lab.appendChild(dia); lab.appendChild(val);
   wrap.appendChild(lab);
 
   if (it.blurb){
@@ -215,78 +370,174 @@ function control(it){
     var chans = [0,1,2].map(function(i){
       var r = document.createElement('input');
       r.type = 'range'; r.min = 0; r.max = 1.6; r.step = 0.005;
-      r.oninput = function(){ P[it.name][i] = Number(r.value); refresh(); };
+      r.oninput = function(){
+        var v = nums(valueOf(it.name)); v[i] = Number(r.value);
+        setValue(it.name, v); refresh();
+      };
       r.onchange = queue;
       cols.appendChild(r);
       return r;
     });
-    /* A colour picker is 8-bit and the renderer takes floats that can go
-       above 1. The picker is the quick way in; the three sliders are how you
-       push a channel past white. */
-    pick.oninput = function(){ P[it.name] = fromHex(pick.value); refresh(); };
+    /* A colour picker is 8-bit and the renderer takes floats that can go above
+       1. The picker is the quick way in; the three sliders are how you push a
+       channel past white. */
+    pick.oninput = function(){ setValue(it.name, fromHex(pick.value)); refresh(); };
     pick.onchange = queue;
     box.appendChild(sw); box.appendChild(cols); box.appendChild(pick);
     wrap.appendChild(box);
     refresh = function(){
-      var v = P[it.name];
+      var v = nums(valueOf(it.name));
       val.textContent = fmt(it, v);
       val.classList.toggle('mod', !eq(v, parseDefault(it)));
       sw.style.background = hex(v);
       pick.value = hex(v);
       chans.forEach(function(r,i){ r.value = v[i]; });
+      common();
     };
 
   } else if (it.kind === 'pair'){
     var pr = document.createElement('div'); pr.className = 'pair';
     var two = [0,1].map(function(i){
-      var d = document.createElement('div');
       var r = document.createElement('input');
       r.type = 'range'; r.min = it.min; r.max = it.max; r.step = it.step;
       r.oninput = function(){
-        P[it.name][i] = Number(r.value);
+        var v = nums(valueOf(it.name)); v[i] = Number(r.value);
         // lo must stay under hi, or the film range inverts and the shader
         // sweeps backwards through the interference orders.
-        if (P[it.name][0] > P[it.name][1]){
-          if (i === 0) P[it.name][1] = P[it.name][0];
-          else P[it.name][0] = P[it.name][1];
-        }
-        refresh();
+        if (v[0] > v[1]){ if (i === 0) v[1] = v[0]; else v[0] = v[1]; }
+        setValue(it.name, v); refresh();
       };
       r.onchange = queue;
-      d.appendChild(r); pr.appendChild(d);
+      var d = document.createElement('div'); d.appendChild(r);
+      pr.appendChild(d);
       return r;
     });
     wrap.appendChild(pr);
     refresh = function(){
-      var v = P[it.name];
+      var v = nums(valueOf(it.name));
       val.textContent = fmt(it, v);
       val.classList.toggle('mod', !eq(v, parseDefault(it)));
       two.forEach(function(r,i){ r.value = v[i]; });
+      common();
     };
 
   } else {
     var sl = document.createElement('input');
     sl.type = 'range'; sl.min = it.min; sl.max = it.max; sl.step = it.step;
-    sl.oninput = function(){ P[it.name] = Number(sl.value); refresh(); };
+    sl.oninput = function(){ setValue(it.name, Number(sl.value)); refresh(); };
     sl.onchange = queue;
     wrap.appendChild(sl);
     refresh = function(){
-      var v = P[it.name];
+      var v = valueOf(it.name);
       val.textContent = fmt(it, v);
-      val.classList.toggle('mod', String(fmt(it,v)) !== String(fmt(it,parseDefault(it))));
+      val.classList.toggle('mod', fmt(it, v) !== fmt(it, parseDefault(it)));
       sl.value = v;
+      common();
     };
+  }
+
+  // the keyframe strip, the ease picker and the curve - only when animated
+  var strip = document.createElement('div'); strip.className = 'keys';
+  var tbar = document.createElement('div'); tbar.className = 'trackbar';
+  var cv = document.createElement('canvas'); cv.className = 'curve';
+  wrap.appendChild(strip); wrap.appendChild(tbar); wrap.appendChild(cv);
+
+  function common(){
+    var tr = T[it.name];
+    wrap.classList.toggle('anim', !!tr);
+    dia.classList.toggle('on', !!tr);
+    strip.innerHTML = ''; tbar.innerHTML = '';
+    if (!tr){
+      cv.style.display = 'none';
+      return;
+    }
+    cv.style.display = 'block';
+
+    tr.keys.forEach(function(k, i){
+      var chip = document.createElement('span');
+      chip.className = 'chip' + (k[0] === frameNow() ? ' now' : '');
+      var jump = document.createElement('button');
+      jump.className = 'go';
+      jump.textContent = tc(k[0]);
+      jump.title = 'frame ' + k[0] + ' — ' + fmt(it, k[1]);
+      jump.onclick = function(){
+        $('frame').value = k[0]; frameLabel(); refreshAll(); render();
+      };
+      chip.appendChild(jump);
+      // per-key easing, for the segment that STARTS here: it is what lets one
+      // transition snap and the next one glide.
+      if (i < tr.keys.length - 1){
+        var es = document.createElement('select');
+        es.className = 'mini';
+        ['(track)'].concat(S.eases).forEach(function(e){
+          var o = document.createElement('option');
+          o.value = (e === '(track)') ? '' : e;
+          o.textContent = (e === '(track)') ? '↝' : e[0].toUpperCase();
+          o.title = e;
+          es.appendChild(o);
+        });
+        es.value = k[2] || '';
+        es.title = 'easing out of this key';
+        es.onchange = function(){
+          if (es.value) k[2] = es.value; else k.length = 2;
+          els[it.name](); queue();
+        };
+        chip.appendChild(es);
+      }
+      var x = document.createElement('button');
+      x.className = 'x'; x.textContent = '✕';
+      x.title = 'remove this key';
+      x.onclick = function(){
+        tr.keys.splice(i, 1);
+        if (!tr.keys.length) dropTrack(it.name);
+        els[it.name](); queue();
+      };
+      chip.appendChild(x);
+      strip.appendChild(chip);
+    });
+
+    var es2 = document.createElement('select');
+    es2.className = 'mini';
+    S.eases.forEach(function(e){
+      var o = document.createElement('option');
+      o.value = e; o.textContent = e;
+      es2.appendChild(o);
+    });
+    es2.value = tr.ease;
+    es2.onchange = function(){ tr.ease = es2.value; els[it.name](); queue(); };
+    var t1 = document.createElement('span'); t1.textContent = 'between keys:';
+    var clear = document.createElement('button');
+    clear.className = 'x'; clear.textContent = 'drop all keys';
+    clear.style.marginLeft = 'auto';
+    clear.onclick = function(){ dropTrack(it.name); els[it.name](); queue(); };
+    tbar.appendChild(t1); tbar.appendChild(es2); tbar.appendChild(clear);
+
+    drawCurve(cv, it);
   }
 
   els[it.name] = refresh;
   return wrap;
 }
 
+function build(){
+  var host = $('groups');
+  host.innerHTML = '';
+  S.groups.forEach(function(g){
+    var h = document.createElement('h2');
+    h.textContent = g.title;
+    host.appendChild(h);
+    g.items.forEach(function(it){ host.appendChild(control(it)); });
+  });
+}
 function refreshAll(){ Object.keys(els).forEach(function(k){ els[k](); }); }
 
+/* ------------------------------------------------------------ rendering -- */
 function payload(){
   var out = {};
   Object.keys(P).forEach(function(k){ out[k] = P[k]; });
+  // an animated setting still needs a value for the frame being rendered, in
+  // case the server ever wants one; the track is what actually decides
+  Object.keys(T).forEach(function(k){ out[k] = valueOf(k); });
   return out;
 }
 
@@ -306,22 +557,18 @@ function render(){
   var t0 = performance.now();
   var body = {
     params: payload(),
-    frame: Number($('frame').value),
+    tracks: T,
+    frame: frameNow(),
     div: Number($('div').value),
     detail: $('detail').checked,
-    /* A FIXED width, not the container's. Measuring the panel made the
-       preview quality depend on how wide the window happened to be - a
-       narrow window rendered 360 px and you could not judge anything - and
-       it would want a re-render on every resize. Render generously once and
-       let CSS scale it down for display. */
-    width: $('detail').checked ? 760 : 1400
+    width: Math.max(360, Math.min(2400,
+      $('detail').checked ? 760 : Math.round($('img').parentNode.clientWidth)))
   };
   fetch('/render', {method:'POST', headers:{'Content-Type':'application/json'},
                     body: JSON.stringify(body)})
     .then(function(r){ return r.json(); })
     .then(function(d){
-      lastMs = performance.now() - t0;
-      $('timing').textContent = (lastMs/1000).toFixed(1) + ' s a frame';
+      $('timing').textContent = ((performance.now() - t0)/1000).toFixed(1) + ' s a frame';
       if (!d.ok){
         $('err').textContent = d.error || 'the render failed';
         $('err').classList.add('on');
@@ -351,14 +598,13 @@ function marks(){
     b.textContent = m.label;
     b.onclick = function(){
       $('frame').value = m.frame;
-      frameLabel();
-      render();
+      frameLabel(); refreshAll(); render();
     };
     host.appendChild(b);
   });
 }
 function frameLabel(){
-  var f = Number($('frame').value);
+  var f = frameNow();
   $('frameV').textContent = f + '   ' + tc(f);
   var best = null;
   S.marks.forEach(function(m){ if (m.frame === f) best = m.label; });
@@ -368,15 +614,17 @@ function frameLabel(){
 }
 
 function lookState(){
-  $('lookState').innerHTML = S.hasLook
-    ? 'Using <span class="saved">look.json</span> — <code>' + S.lookPath + '</code>'
-    : 'No look.json yet: these are the renderer’s built-in defaults.';
+  var n = Object.keys(T).length;
+  $('lookState').innerHTML = (S.hasLook
+      ? 'Using <span class="saved">look.json</span> — <code>' + S.lookPath + '</code>'
+      : 'No look.json yet: these are the renderer’s built-in defaults.')
+    + (n ? '<br>' + n + ' setting' + (n === 1 ? '' : 's') + ' animated.' : '');
 }
 
 fetch('/state').then(function(r){ return r.json(); }).then(function(d){
   S = d;
-  // Start from the defaults, then lay whatever is in look.json over the top,
-  // so the sliders open showing what the delivery would currently render.
+  // Start from the defaults, then lay look.json over the top, so the sliders
+  // open showing what the delivery would currently render.
   S.groups.forEach(function(g){
     g.items.forEach(function(it){
       var v = parseDefault(it);
@@ -386,21 +634,34 @@ fetch('/state').then(function(r){ return r.json(); }).then(function(d){
           ? String(s).split(',').map(Number) : Number(s);
       }
       P[it.name] = v;
+      var tr = S.tracks[it.name];
+      if (tr && tr.keys && tr.keys.length){
+        T[it.name] = {
+          ease: tr.ease || 'smooth',
+          keys: tr.keys.map(function(k){
+            var val = (it.kind === 'rgb' || it.kind === 'pair')
+              ? String(k[1]).split(',').map(Number) : Number(k[1]);
+            return k.length > 2 && k[2] ? [Number(k[0]), val, k[2]]
+                                        : [Number(k[0]), val];
+          })
+        };
+        sortKeys(T[it.name]);
+      }
     });
   });
-
-  build();
-  refreshAll();
-  marks();
-  lookState();
 
   var fr = $('frame');
   fr.min = S.frames.lo; fr.max = S.frames.hi; fr.step = 1;
   var want = (location.hash.match(/frame=(\d+)/) || [])[1];
   fr.value = want ? Number(want) : 5700;
-  fr.oninput = frameLabel;
+  fr.oninput = function(){ frameLabel(); refreshAll(); };
   fr.onchange = queue;
+
+  build();
   frameLabel();
+  refreshAll();
+  marks();
+  lookState();
   $('div').value = String(S.div);
 
   $('render').onclick = render;
@@ -408,22 +669,23 @@ fetch('/state').then(function(r){ return r.json(); }).then(function(d){
   $('detail').onchange = render;
 
   $('reset').onclick = function(){
+    T = {};
     S.groups.forEach(function(g){
       g.items.forEach(function(it){ P[it.name] = parseDefault(it); });
     });
-    refreshAll();
-    render();
+    refreshAll(); lookState(); render();
   };
 
   $('save').onclick = function(){
     fetch('/save', {method:'POST', headers:{'Content-Type':'application/json'},
-                    body: JSON.stringify({params: payload()})})
+                    body: JSON.stringify({params: payload(), tracks: T})})
       .then(function(r){ return r.json(); })
       .then(function(d){
         if (!d.ok){ alert('Could not save: ' + d.error); return; }
         S.hasLook = d.count > 0; lookState();
-        $('copied').textContent = 'saved ' + d.count + ' setting(s)';
-        setTimeout(function(){ $('copied').textContent = ''; }, 3000);
+        $('copied').textContent = 'saved ' + d.count + ' setting(s)'
+          + (d.animated ? ', ' + d.animated + ' animated' : '');
+        setTimeout(function(){ $('copied').textContent = ''; }, 3500);
       });
   };
 
@@ -447,6 +709,7 @@ fetch('/state').then(function(r){ return r.json(); }).then(function(d){
     });
   };
 
+  window.addEventListener('resize', function(){ refreshAll(); });
   render();
 });
 </script>

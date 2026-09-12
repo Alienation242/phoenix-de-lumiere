@@ -126,6 +126,37 @@ renders with the built-ins. It cannot stop a delivery at two in the morning.
 **Changes if:** the piece ever needs more than one look at once. Then it becomes
 `--look <file>` and the sliders save presets.
 
+### An animated setting is keys in the same file, not a second system.
+**Because** the alternative was a separate "animation" file and a separate code
+path to apply it, and then two ways for the delivery to be wrong. A setting in
+`look.json` is either a value or `{"ease": …, "keys": [[frame, value], …]}`, and
+that is the whole format. Plain values become argparse defaults exactly as
+before; keyed ones are evaluated per frame in the render loop — which already
+set every look uniform once per frame for its own reasons, so animating them
+costs a dictionary lookup.
+**Practically:** keys hold at both ends rather than extrapolating, because
+beyond them lie the handles, where this surface has to match the other eleven.
+Colours and the film range interpolate per component and come back out as the
+same comma strings, so nothing downstream can tell an animated colour from a
+fixed one.
+**Consequence:** a setting that is animated cannot also be given on the command
+line — the track would overwrite the flag every frame. The renderer prints a
+NOTE naming the clash rather than letting the flag silently do nothing.
+
+### The tuner previews through --look, not through a string of flags.
+**Because** no command line can express a keyframe. Writing the page's state to
+a preview look file and rendering with `--look` means a preview goes down
+exactly the path the delivery goes down, animation included. The preview file is
+written next to the frame in `work/`, never over `_pipeline/look.json`: moving a
+slider must not change what the delivery would render until Save is pressed.
+
+### The easing maths is written twice, in python and in javascript.
+**Because** the page has to draw the curve and show what a slider reads at the
+playhead without a three-second round trip for every pixel. The copies must stay
+identical, and there is a comment in each saying so. The risk is contained: the
+PICTURE always comes back from the real renderer, so a disagreement could only
+ever mislead about the delivery, never change it.
+
 ### The slider ranges live in tune_look.py; the values live in the renderer.
 **Because** two copies of a default drift apart, and the one that would be wrong
 is the one you are looking at. `tune_look.py` asks

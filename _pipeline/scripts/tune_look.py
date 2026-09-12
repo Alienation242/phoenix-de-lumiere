@@ -25,6 +25,7 @@ so nothing outside this machine can reach it, and it needs no internet.
 import argparse
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -152,6 +153,23 @@ def load_look():
         return {}
 
 
+def split_look(d):
+    """look.json as the page wants it: plain values apart from animated ones.
+
+    An animated setting is stored as {"ease": ..., "keys": [[frame, value]]} -
+    the same shape render_shader.py reads - so this is only a sorting job.
+    """
+    static, tracks = {}, {}
+    for k, v in (d or {}).items():
+        if k.startswith("_"):
+            continue
+        if isinstance(v, dict) and v.get("keys"):
+            tracks[k] = {"ease": v.get("ease", "smooth"), "keys": v["keys"]}
+        else:
+            static[k] = v
+    return static, tracks
+
+
 def spec(dflt):
     """The slider list, with each default filled in from the renderer."""
     groups = []
@@ -205,31 +223,99 @@ class Tuner(object):
         self.allowed = {i["name"]: i["kind"]
                         for g in self.spec for i in g["items"]}
 
-    def argv(self, params, frame, div):
-        a = [sys.executable, RENDERER,
-             "--div", str(div), "--start", str(frame), "--count", "1",
-             "--png", "--out", self.work]
-        for name, value in params.items():
-            kind = self.allowed.get(name)
-            if kind is None:
-                continue
-            a += ["--" + name.replace("_", "-"), to_flag(kind, value)]
-        return a
+    def look_dict(self, params, tracks, changed_only=False):
+        """The page's state as a look file.
 
-    def flags(self, params):
-        """The same settings as a line you can paste into a terminal."""
-        parts = []
+        changed_only=False for a preview - write everything, so what renders is
+        exactly what the sliders say. changed_only=True for Save, so look.json
+        stays a short list of decisions somebody can read in a diff rather than
+        a dump of every default.
+        """
+        out = {}
+        for g in self.spec:
+            for i in g["items"]:
+                name, kind = i["name"], i["kind"]
+                if name in (tracks or {}):
+                    tr = tracks[name]
+                    keys = []
+                    for k in tr.get("keys") or []:
+                        row = [int(k[0]), to_flag(kind, k[1])
+                               if kind in ("rgb", "pair") else float(k[1])]
+                        if len(k) > 2 and k[2]:
+                            row.append(str(k[2]))
+                        keys.append(row)
+                    if not keys:
+                        continue
+                    out[name] = {"ease": tr.get("ease", "smooth"), "keys": keys}
+                    continue
+                if name not in params:
+                    continue
+                got = to_flag(kind, params[name])
+                if changed_only and got == to_flag(kind, i["default"]):
+                    continue
+                if kind in ("rgb", "pair"):
+                    out[name] = got
+                elif kind == "int":
+                    out[name] = int(round(float(params[name])))
+                else:
+                    out[name] = float(params[name])
+        return out
+
+    def write_look(self, path, look):
+        look = dict(look)
+        look["_note"] = (
+            "Written by tune_look.py. render_shader.py loads this as its "
+            "DEFAULTS, so EXPORT.cmd uses it too. A setting with 'keys' is "
+            "animated: [frame, value] pairs interpolated with 'ease' "
+            "(hold / linear / smooth / ease-in / ease-out), and a third "
+            "element on a key overrides the ease for the segment starting "
+            "there. Command-line flags still win over plain values; --no-look "
+            "ignores this file entirely. Delete it for the built-in look.")
+        text = json.dumps(look, indent=1, sort_keys=True)
+        # One keyframe per line. Indented, each [frame, value] becomes three or
+        # four lines of its own, and a track with ten keys turns look.json into
+        # forty lines nobody can read in a diff - and this file is meant to be
+        # read in a diff, it is the artistic decision under version control.
+        # Only bracket-free arrays collapse, which is exactly the key rows.
+        text = re.sub(r"\[\s+((?:[^][{}])*?)\s+\]",
+                      lambda m: "[" + " ".join(m.group(1).split()) + "]", text)
+        with open(path, "w") as fh:
+            print(text, file=fh)
+
+    def argv(self, look_file, frame, div):
+        # The preview goes through --look rather than a string of flags,
+        # because no command line can express an animated setting - and because
+        # it then takes exactly the path the delivery takes.
+        return [sys.executable, RENDERER,
+                "--div", str(div), "--start", str(frame), "--count", "1",
+                "--png", "--out", self.work, "--look", look_file]
+
+    def flags(self, params, tracks):
+        """The constant settings as a line you can paste into a terminal.
+
+        Animated ones have no flag to give - they only exist in the look file -
+        so they are named rather than silently left out.
+        """
+        parts, moving = [], []
         for g in self.spec:
             for i in g["items"]:
                 name = i["name"]
+                if name in (tracks or {}):
+                    moving.append(i["flag"])
+                    continue
                 if name not in params:
                     continue
                 got = to_flag(i["kind"], params[name])
                 if got != to_flag(i["kind"], i["default"]):
                     parts.append("%s %s" % (i["flag"], got))
-        return " ".join(parts)
+        line = " ".join(parts)
+        if moving:
+            note = ("# animated, so they live in look.json and not on a "
+                    "command line: " + ", ".join(sorted(moving)))
+            line = (line + "\n" + note) if line else note
+        return line
 
-    def render(self, params, frame, div, width, detail):
+    def render(self, params, tracks, frame, div, width, detail):
         """One frame, as a PNG ready for the page. (bytes, note) or (None, why)."""
         with self.lock:
             for f in os.listdir(self.work):
@@ -238,7 +324,15 @@ class Tuner(object):
                         os.remove(os.path.join(self.work, f))
                     except OSError:
                         pass
-            rc, out = run(self.argv(params, frame, div))
+            # A preview look file of its own, next to the frame. It never
+            # touches _pipeline/look.json - moving a slider must not change
+            # what the delivery would render until you press Save.
+            look_file = os.path.join(self.work, "preview_look.json")
+            try:
+                self.write_look(look_file, self.look_dict(params, tracks))
+            except OSError as e:
+                return None, "could not write the preview look file: %s" % e
+            rc, out = run(self.argv(look_file, frame, div))
             if rc != 0:
                 return None, self._why(out)
             pngs = [os.path.join(self.work, f) for f in os.listdir(self.work)
@@ -329,7 +423,9 @@ class Handler(BaseHTTPRequestHandler):
             seg = CFG["segment"]
             self._json(200, {
                 "groups": t.spec,
-                "saved": load_look(),
+                "saved": split_look(load_look())[0],
+                "tracks": split_look(load_look())[1],
+                "eases": ["hold", "linear", "smooth", "ease-in", "ease-out"],
                 "div": t.div,
                 "frames": {"lo": seg["in"] - seg["handles"],
                            "hi": seg["out"] + seg["handles"],
@@ -351,47 +447,34 @@ class Handler(BaseHTTPRequestHandler):
             width = max(320, min(2400, int(b.get("width") or 1100)))
             if div not in (1, 2, 4):
                 div = t.div
-            png, why = t.render(params, frame, div, width, bool(b.get("detail")))
+            tracks = b.get("tracks") or {}
+            png, why = t.render(params, tracks, frame, div, width,
+                                bool(b.get("detail")))
             if png is None:
                 self._json(200, {"ok": False, "error": why})
                 return
             import base64
             self._json(200, {"ok": True,
                              "png": base64.b64encode(png).decode("ascii"),
-                             "flags": t.flags(params)})
+                             "flags": t.flags(params, tracks)})
             return
 
         if self.route == "/save":
             params = b.get("params") or {}
-            keep = {}
-            for g in t.spec:
-                for i in g["items"]:
-                    name = i["name"]
-                    if name not in params:
-                        continue
-                    got = to_flag(i["kind"], params[name])
-                    if got == to_flag(i["kind"], i["default"]):
-                        continue          # only what you actually changed
-                    if i["kind"] in ("rgb", "pair"):
-                        keep[name] = got
-                    elif i["kind"] == "int":
-                        keep[name] = int(round(float(params[name])))
-                    else:
-                        keep[name] = float(params[name])
-            keep["_note"] = ("Written by tune_look.py. render_shader.py loads "
-                             "this as its DEFAULTS, so EXPORT.cmd uses it too. "
-                             "Command-line flags still win; --no-look ignores "
-                             "this file. Delete it to go back to the built-in "
-                             "look.")
+            tracks = b.get("tracks") or {}
+            keep = t.look_dict(params, tracks, changed_only=True)
             try:
-                with open(LOOK, "w") as fh:
-                    json.dump(keep, fh, indent=1, sort_keys=True)
+                t.write_look(LOOK, keep)
             except OSError as e:
                 self._json(200, {"ok": False, "error": str(e)})
                 return
             n = len([k for k in keep if not k.startswith("_")])
-            print("  saved %d setting(s) to %s" % (n, LOOK))
-            self._json(200, {"ok": True, "count": n, "path": LOOK})
+            moving = len([k for k in keep
+                          if isinstance(keep[k], dict) and keep[k].get("keys")])
+            print("  saved %d setting(s) to %s%s"
+                  % (n, LOOK, (" (%d animated)" % moving) if moving else ""))
+            self._json(200, {"ok": True, "count": n, "animated": moving,
+                             "path": LOOK})
             return
 
         if self.route == "/revert":

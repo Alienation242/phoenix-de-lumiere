@@ -95,6 +95,13 @@ quarter size, so what you see is what the delivery makes.
   *defaults*, so **`EXPORT.cmd` renders your look** with nothing else to
   remember. It prints `look  N setting(s) from …` when it does.
 - Command-line flags still beat the file, and `--no-look` ignores it.
+- **◆ keyframes a setting.** Once it has one key it turns amber, and its
+  slider then writes a key wherever the playhead is — move the frame, move the
+  slider, that is a second key. A small graph under the row draws the curve
+  across the whole segment. Between keys you get `hold`, `linear`, `smooth`,
+  `ease-in` or `ease-out`, per track or per key, so one transition can snap
+  while the next one glides. The look can move over the eighty seconds instead
+  of being one setting for all of it.
 - **1:1 detail** shows an unscaled slice. Fitting 2447 px into a browser hides
   exactly the dither and banding these sliders exist to judge.
 - The bookmark buttons jump to the moments that matter — near-black at 2:40,
