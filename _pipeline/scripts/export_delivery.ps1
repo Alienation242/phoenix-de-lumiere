@@ -344,10 +344,19 @@ if ($py) { Good ("python  {0}" -f (& python -c "import sys;print(sys.version.spl
 else { $fail += 'python is not on PATH'; Bad 'python not found' }
 
 if ($py) {
-    & python -c "import moderngl" 2>$null
-    if ($LASTEXITCODE -eq 0) { Good 'moderngl' } else { $fail += 'moderngl missing - run: python -m pip install moderngl'; Bad 'moderngl missing' }
-    & python -c "import numpy" 2>$null
-    if ($LASTEXITCODE -eq 0) { Good 'numpy' } else { $fail += 'numpy missing'; Bad 'numpy missing' }
+    # Test-PyModule, not `& python -c ... 2>$null`. See the long note in
+    # _common.ps1: the redirect form terminates the script on the machine where
+    # a module is actually missing, so this block used to crash with a raw
+    # traceback instead of printing the pip command that fixes it.
+    foreach ($m in 'moderngl', 'numpy') {
+        $r = Test-PyModule $m
+        if ($r.Ok) { Good $m }
+        else {
+            $fail += "python cannot import $m - run: python -m pip install $m"
+            Bad ("{0} missing" -f $m)
+            if ($r.Reason) { Line ("        {0}" -f $r.Reason) }
+        }
+    }
 }
 
 Good ("ffmpeg  {0}" -f $FFmpegExe)
@@ -488,9 +497,13 @@ if ($Layout -eq 'Stitched') {
     Line "  band is inside it, where it belongs. Checking size and length only."
     Line
     $vrc = 0
-    & python (Join-Path $PSScriptRoot 'verify_plates.py') --a $fc.FullName `
-        --b $fc.FullName --div $div --samples 2 --tol 99 2>&1 |
-        Select-String -Pattern 'frames:' | Tee-Object -FilePath $log -Append
+    $vr = Invoke-Native 'python' @((Join-Path $PSScriptRoot 'verify_plates.py'),
+        '--a', $fc.FullName, '--b', $fc.FullName,
+        '--div', $div, '--samples', 2, '--tol', 99)
+    foreach ($l in ($vr.Lines | Where-Object { $_ -match 'frames:' })) {
+        Line $l
+        Add-Content -LiteralPath $log -Value $l
+    }
     $expect = "$([int]$Cfg.canvas.w / $div)x$([int]$Cfg.canvas.h / $div)"
     Line "  expected $expect"
 } else {
@@ -502,9 +515,13 @@ Line "  Tolerance for $($P.Codec) is $tol - the two files are encoded separately
 Line "  different widths, so a lossy codec always leaves a little noise in the"
 Line "  overlap. A real fault would read in the tens, not the ones."
 Line
-& python (Join-Path $PSScriptRoot 'verify_plates.py') --a $f1.FullName --b $f2.FullName `
-    --div $div --samples 8 --tol $tol 2>&1 | Tee-Object -FilePath $log -Append
-$vrc = $LASTEXITCODE
+# Invoke-NativeStream so the per-frame overlap table appears as it is measured
+# AND a python-side failure cannot terminate the script. This runs after a
+# render that may have taken hours; dying here rather than reporting would be
+# the most expensive possible place for that stderr trap to fire.
+$vrc = Invoke-NativeStream 'python' @((Join-Path $PSScriptRoot 'verify_plates.py'),
+    '--a', $f1.FullName, '--b', $f2.FullName,
+    '--div', $div, '--samples', 8, '--tol', $tol) -TeeTo $log
 }
 
 # ---------------------------------------------------------------- notes ------

@@ -139,10 +139,17 @@ Write-Host ""
 Write-Host "--- python ---"
 $py = Get-Command python -ErrorAction SilentlyContinue
 if ($py) {
-    Line ("{0}  {1}" -f $py.Source, (& python --version 2>&1))
-    $hasNumpy = & python -c "import importlib.util as u;print(bool(u.find_spec('numpy')))" 2>$null
-    if ($hasNumpy -eq 'True') { Good "numpy" } else { Bad "numpy missing - run:  python -m pip install numpy" }
-} else { Bad "python not found on PATH - verify_plates.py and analyse_arc.py need it" }
+    Line ("{0}  {1}" -f $py.Source, (Invoke-Native 'python' @('--version')).LastLine)
+    # moderngl is the renderer now, not an optional extra - check it first.
+    foreach ($m in 'moderngl', 'numpy') {
+        $r = Test-PyModule $m
+        if ($r.Ok) { Good $m }
+        else {
+            Bad ("$m missing - run:  python -m pip install $m")
+            if ($r.Reason) { Line ("     {0}" -f $r.Reason) }
+        }
+    }
+} else { Bad "python not found on PATH - render_shader.py and verify_plates.py need it" }
 
 Write-Host ""
 Write-Host "--- project files ---"

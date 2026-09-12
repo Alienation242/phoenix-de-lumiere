@@ -50,14 +50,34 @@ function Good { param([string]$s) Write-Host "  OK    $s" -ForegroundColor Green
 function Bad  { param([string]$s) Write-Host "  FAIL  $s" -ForegroundColor Red }
 function Warn { param([string]$s) Write-Host "  warn  $s" -ForegroundColor Yellow }
 
+# Deliberately standalone: this script is what you run BEFORE the project has
+# an ffmpeg, and dot-sourcing _common.ps1 would throw looking for one. So the
+# stderr guard from _common.ps1's Invoke-Native is repeated here in miniature -
+# redirecting a native program's stderr under $ErrorActionPreference='Stop'
+# makes its first stderr line terminate the script.
+function Invoke-Quiet {
+    param([string]$Exe, [string[]]$Arguments = @())
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & $Exe @Arguments 2>&1 | ForEach-Object {
+            if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception.Message }
+            else { [string]$_ }
+        }
+        $code = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $prev }
+    return [pscustomobject]@{ Ok = ($code -eq 0); Lines = @($out); Text = (@($out) -join "`n") }
+}
+
 function Test-Build {
     # What can this binary actually encode? Returns $null if it will not run at
     # all, otherwise the list of wanted encoders it is missing.
     param([string]$Path)
     if (-not (Test-Path $Path)) { return $null }
-    try { $enc = & $Path -hide_banner -encoders 2>&1 | Out-String }
-    catch { return $null }
-    if (-not $enc) { return $null }
+    $r = Invoke-Quiet $Path @('-hide_banner', '-encoders')
+    if (-not $r.Ok) { return $null }
+    $enc = $r.Text
     # The leading comma matters. PowerShell unrolls a returned array, and an
     # EMPTY one unrolls to nothing at all - so "no encoders missing", the good
     # case, came back as $null and read as "there is no ffmpeg here".
@@ -66,7 +86,8 @@ function Test-Build {
 
 function Show-Build {
     param([string]$Path)
-    $ver = (& $Path -hide_banner -version 2>&1 | Select-Object -First 1)
+    $ver = (Invoke-Quiet $Path @('-hide_banner', '-version')).Lines |
+           Select-Object -First 1
     Line ("  {0}" -f $ver)
     Line ("  {0}" -f $Path)
 }

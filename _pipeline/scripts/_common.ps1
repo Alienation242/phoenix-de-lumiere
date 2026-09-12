@@ -61,6 +61,92 @@ function Get-MaskRoots([string]$Variant = 'Layer') {
     return @{ Masks = $MaskRoot; Reference = $RefRoot }
 }
 
+# ---- running other programs -------------------------------------------------
+# READ THIS BEFORE WRITING `& something.exe ... 2>$null` ANYWHERE IN THIS REPO.
+#
+# In Windows PowerShell, redirecting a native program's stderr - 2>$null, 2>&1,
+# or just putting a pipe in front of it - wraps every stderr line in a
+# NativeCommandError record. Every script here sets
+# $ErrorActionPreference='Stop', and that makes the FIRST such line terminate
+# the script on the spot.
+#
+# So a check written the obvious way:
+#
+#     & python -c "import moderngl" 2>$null
+#     if ($LASTEXITCODE -eq 0) { 'ok' } else { 'moderngl missing' }
+#
+# never reaches its own else branch. On a machine where the module is missing,
+# python prints a traceback, the redirect turns it into a terminating error, and
+# the script dies before it can say what is wrong. It behaves perfectly on every
+# machine where the check PASSES - which is how it went unnoticed until the
+# delivery export died on a second PC with a raw traceback instead of the
+# "moderngl missing - run: python -m pip install moderngl" it was written to
+# print.
+#
+# Use these two instead. Both relax $ErrorActionPreference for exactly as long
+# as the program runs and trust the exit code, which is the thing that actually
+# tells you whether it worked.
+
+function Invoke-Native {
+    # Run a program, collect everything it said, hand back the exit code.
+    # For checks: you want the answer, not a running commentary.
+    param(
+        [Parameter(Mandatory = $true)][string] $Exe,
+        [string[]] $Arguments = @()
+    )
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $lines = & $Exe @Arguments 2>&1 | ForEach-Object {
+            if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception.Message }
+            else { [string]$_ }
+        }
+        $code = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $prev }
+    $lines = @($lines)
+    return [pscustomobject]@{
+        Ok       = ($code -eq 0)
+        Code     = $code
+        Lines    = $lines
+        Text     = ($lines -join "`n")
+        LastLine = ($lines | Where-Object { $_ -and $_.Trim() } | Select-Object -Last 1)
+    }
+}
+
+function Invoke-NativeStream {
+    # Same protection, but print each line as it arrives instead of collecting
+    # it - for a program whose progress you want to watch. Optionally appends
+    # the same lines to a log file. Returns the exit code.
+    param(
+        [Parameter(Mandatory = $true)][string] $Exe,
+        [string[]] $Arguments = @(),
+        [string]   $TeeTo
+    )
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Exe @Arguments 2>&1 | ForEach-Object {
+            $t = if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception.Message }
+                 else { [string]$_ }
+            Write-Host $t
+            if ($TeeTo) { Add-Content -LiteralPath $TeeTo -Value $t }
+        }
+        $code = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $prev }
+    return $code
+}
+
+function Test-PyModule {
+    # Can this python import the module? Returns .Ok plus .Reason - the last
+    # line python printed, which is the difference between
+    # "No module named 'moderngl'" and a DLL that will not load.
+    param([Parameter(Mandatory = $true)][string] $Name)
+    $r = Invoke-Native 'python' @('-c', "import $Name")
+    return [pscustomobject]@{ Ok = $r.Ok; Reason = $r.LastLine }
+}
+
 # ---- ffmpeg -----------------------------------------------------------------
 function Find-FFmpeg {
     if ($env:PXDL_FFMPEG) {
@@ -102,8 +188,8 @@ everything but cannot encode anything this project delivers.
 $script:FFmpegExe = Find-FFmpeg
 
 function Test-FFmpegEncoder([string]$name) {
-    $out = & $FFmpegExe -hide_banner -encoders 2>&1 | Out-String
-    return ($out -match "\s$([regex]::Escape($name))\s")
+    $r = Invoke-Native $FFmpegExe @('-hide_banner', '-encoders')
+    return ($r.Text -match "\s$([regex]::Escape($name))\s")
 }
 
 # `-vsync 0` made ffmpeg emit exactly the frames `select` picked. It was
@@ -112,10 +198,16 @@ function Test-FFmpegEncoder([string]$name) {
 # binary once - version strings can be git hashes - so old nodes keep working.
 $script:PassthroughArgs = $null
 function Get-FramePassthroughArgs {
+    # This probe is MEANT to fail on an older ffmpeg, and a failing ffmpeg
+    # writes to stderr - so the old `2>&1 | Out-Null` form killed the script at
+    # exactly the moment the fallback was needed. Invoke-Native is what makes
+    # asking the question safe.
     if ($null -eq $script:PassthroughArgs) {
-        & $FFmpegExe -hide_banner -loglevel error -f lavfi -i color=c=black:s=16x16:d=0.1 `
-                     -fps_mode passthrough -frames:v 1 -f null - 2>&1 | Out-Null
-        $script:PassthroughArgs = if ($LASTEXITCODE -eq 0) { @('-fps_mode','passthrough') }
+        $r = Invoke-Native $FFmpegExe @(
+            '-hide_banner', '-loglevel', 'error',
+            '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=0.1',
+            '-fps_mode', 'passthrough', '-frames:v', '1', '-f', 'null', '-')
+        $script:PassthroughArgs = if ($r.Ok) { @('-fps_mode','passthrough') }
                                   else { @('-vsync','0') }
     }
     return $script:PassthroughArgs
