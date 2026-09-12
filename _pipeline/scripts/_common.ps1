@@ -41,7 +41,7 @@ $script:DeliverRoot = Resolve-Root 'PXDL_DELIVER_ROOT' $Cfg.dirs.deliver
 $script:MaskRoot    = Join-Path $ProjectRoot $Cfg.dirs.masks
 $script:RefRoot     = Join-Path $ProjectRoot $Cfg.dirs.reference
 
-# The same facade described two ways - see build_masks.py and docs/05_MASKS.md.
+# The same facade described two ways - see build_masks.py and docs/06_MASKS.md.
 # 'Layer' is the authored colour-coded mask exactly as drawn. 'Aligned' is the
 # same shapes, each translated as one rigid piece onto the border the shared
 # noise plate draws - nothing redrawn, nothing deformed, black area untouched.

@@ -2,17 +2,23 @@
 
 You own the `SW` surface: one of twelve mapped surfaces in a 62 × 38 m hall.
 Your segment is 2:00–4:00 of the ten-minute loop, delivered as two videos.
+Ten seconds either side (1:50–2:00, 4:00–4:10) are the hand-off, where the wall
+grows out of the shared noise plate and dissolves back into it.
+
+**To deliver: double-click `EXPORT.cmd` in the project root and pick a number.**
+Everything else here is for when something is unusual.
 
 Everything here was derived by measuring the supplied files.
 
 ```
-docs/03_48H_PLAN.md          ← START HERE. hour-by-hour, and what to cut
-docs/00_TECHNICAL_SPEC.md    what the files actually are
-docs/01_PIPELINE.md          how to build and render it
+docs/07_STATUS.md            ← START HERE. what exists, what is verified, what is open
+docs/00_TECHNICAL_SPEC.md    what the supplied files actually are
+docs/01_PIPELINE.md          how the thing is built and rendered
 docs/02_PORTABLE_RENDER.md   moving to another machine / render node
+docs/03_48H_PLAN.md          the original plan. historical
 docs/04_DECISIONS.md         why things are the way they are
-docs/04_DELIVERY.md          handing the files over. the producer reads this
-docs/05_MASKS.md             the two mask sets, and which one is right
+docs/05_DELIVERY.md          handing the files over. the producer reads this
+docs/06_MASKS.md             the two mask sets, and which one is right
 
 project.json                 every constant. the scripts read it, so edit it here
 masks/                       31 cleaned region mattes, full canvas + per-plate
@@ -67,8 +73,18 @@ it either.
 
 ## Quick start
 
+**Delivering.** Double-click `EXPORT.cmd` and pick a number. It checks the
+machine, renders, verifies the plates and writes the notes that go with them.
+It refuses to start if anything is missing and refuses to report success if the
+plates do not verify. Run `Proof` (two minutes) before `Deliver`.
+
+**Looking at something quickly.**
+
 ```powershell
 cd _pipeline\scripts
+
+# 20 s at quarter size, straight to an mp4
+python render_shader.py --div 4 --start 4800 --count 600 --mp4
 
 # is this machine ready? (run it on any render node too)
 .\check_environment.ps1
@@ -77,38 +93,49 @@ cd _pipeline\scripts
 $env:PXDL_RENDER_ROOT  = "E:\PxDL\render"
 $env:PXDL_DELIVER_ROOT = "E:\PxDL\deliver"
 $env:PXDL_WORK_ROOT    = "E:\PxDL\work"
-
-# quarter-res working plate to design against
-.\extract_segment.ps1 -Div 4
-
-# per-frame arc -> reference\noise_arc.csv
-python analyse_arc.py
 ```
 
-When the master is rendered:
+**Rebuilding the derived data** — only needed if the source mask or the noise
+plate changes.
 
 ```powershell
-.\make_delivery.ps1 -MasterPattern "E:\PxDL\render\master\PxDL_SW_master.%05d.png"
-
-python verify_plates.py --a "E:\PxDL\deliver\PxDL_SW_SPSW1_3570-7229.mov" `
-                        --b "E:\PxDL\deliver\PxDL_SW_SPSW2_3570-7229.mov" --tol 2
+python analyse_arc.py            # per-frame luma and motion -> noise_arc.csv
+python build_masks.py            # the 31 mattes + region tables + ID map + SDF
+python build_masks.py --align    # the second, plate-aligned mask set
+python compare_masks.py          # how far each one is from the plate
 ```
 
 ---
 
 ## Scripts
 
+**The delivery path** — these four are what actually ships the work.
+
 | | |
 |---|---|
-| `check_environment.ps1` | VRAM, disk, encoders, licences, source files. Run first on any machine. |
-| `build_masks.py` | rebuilds all 31 masks, region tables, opening ID map and SDF from the source mask |
-| `extract_segment.ps1` | pulls your segment out of the plates at ÷1, ÷2 or ÷4, per-plate or stitched |
+| `export_delivery.ps1` | **the one to run.** Preflight → render → verify → notes. `EXPORT.cmd` in the project root is a double-clickable wrapper |
+| `render_shader.py` | **renders the wall** — sky/oil + chrome objects + pillars over the noise, any resolution, no licence. Writes the two projector plates directly |
+| `verify_plates.py` | resolution, frame count, and that the 1000 px overlap holds. The export runs it for you and will not report success without it |
+| `check_hq.py` | validates the high-quality masters when they arrive: geometry, **frame alignment**, levels, and whether the arc needs remeasuring |
+
+**Building the derived data** — run when the source mask or the plate changes.
+
+| | |
+|---|---|
+| `build_masks.py` | the 31 mattes, region tables, opening ID map and SDF. `--align` builds the second, plate-aligned set |
+| `compare_masks.py` | measures both mask sets against the plate and draws the overlay |
 | `analyse_arc.py` | per-frame luma and motion → `noise_arc.csv`, and prints the cut list |
-| `master_to_plates.ps1` | master → lossless 16-bit plate sequences |
-| `make_delivery.ps1` | master → encoded plates in one pass (ProRes/DNxHR/FFV1/H.264/PNG16) |
-| `render_shader.py` | **renders the wall** — sky/oil + chrome objects + pillars over the noise, any resolution, no licence |
-| `render_test.ps1` | small preview video of anything you have rendered, frame numbers burnt in |
-| `verify_plates.py` | resolution, frame count, and that the overlap is identical. **Always run this.** |
+
+**Utilities** — from before the renderer existed; still useful, not in the
+delivery path.
+
+| | |
+|---|---|
+| `check_environment.ps1` | VRAM, disk, encoders, licences, source files. Run first on any machine |
+| `extract_segment.ps1` | pulls the segment out of the plates at ÷1, ÷2 or ÷4, per-plate or stitched |
+| `master_to_plates.ps1` | master sequence → lossless 16-bit plate sequences |
+| `make_delivery.ps1` | master sequence → encoded plates in one pass |
+| `render_test.ps1` | small preview video of anything rendered, frame numbers burnt in |
 | `preview_stitch.ps1` | stitches the plates back to one canvas for review |
 | `_common.ps1` / `_common.py` | path and ffmpeg resolution — nothing machine-specific anywhere else |
 
@@ -116,11 +143,16 @@ python verify_plates.py --a "E:\PxDL\deliver\PxDL_SW_SPSW1_3570-7229.mov" `
 
 ## The story, as it stands
 
-The noise becomes a **sky with clouds on the inside of the venue**; every
-**opening becomes an oil field**. **Polished chrome objects** — spheres, tori,
-cubes, diamonds, pyramids — arrive **from outside, in through the windows**,
-cross the room, and **leave through the big middle door** (door 26, x 4696,
-757 × 754 — the largest of the three and the one nearest the canvas centre).
+The noise becomes a **sky inside the venue**; every **opening becomes an oil
+field**. **Polished chrome objects** — spheres, tori, Möbius torsions and
+trefoil knots, all round, no hard-edged solids — arrive **from outside, in
+through the windows**, cross the room, and **leave through the big middle door**
+(door 26, x 4696, 757 × 754 — the largest of the three and the one nearest the
+canvas centre). 26 of them over the two minutes, two or three on screen at once.
+
+There are no procedural clouds anywhere. The plate's own dither is the only
+texture on the wall: it drives the sky bands and the oil thickness rather than
+sitting behind them. Only the objects stand out.
 
 The whole thing is layered for depth, and a slow left-right camera moves each
 layer by a different amount. On a flat wall, differential motion *is* depth:
@@ -152,7 +184,10 @@ world is what makes them sit in the room instead of on top of it.
    wall dimensions and UV layout. Your 6 m estimate is too low; the doors put the
    canvas at ~10 m tall (spec §6).
 2. **Codec preference** — offer ProRes 4444 plus the 16-bit master on the drive.
-3. **Handles** — 3570–7229 (±1 s) is the current default. Drop them if time runs short.
+3. **Handles** — the render covers 3270–7529; the piece proper is 3300–7499,
+   with 1:50–2:00 and 4:00–4:10 as hand-off windows that can be cut anywhere.
+4. **Stitched or two plates?** `-Layout Both` produces both from one render if
+   they are not sure — see `docs/05_DELIVERY.md`.
 
 ## Working vs final quality
 

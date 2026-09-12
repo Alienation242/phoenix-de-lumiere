@@ -11,11 +11,20 @@ other way.
 
 ### Both plates are sliced from one master. Always.
 **Because** the 1000 px overlap must be pixel-identical in both plates. Rendering
-them separately does not produce that even from identical inputs — the two
-supplied source plates were encoded independently and differ by a mean of 11.7
-in the overlap, which is exactly the failure mode.
-**Changes if:** never. `verify_plates.py` exists to catch it; sliced-from-one-master
-reports 0.000, independently encoded reports 11.7 and fails.
+them separately does not produce that even from identical inputs — and the
+supplied plates are the proof: they were encoded independently and **differ from
+each other by a mean of 7.1 through their own overlap** (16 frames sampled
+across the delivered segment: 0.0 where the plate is black, 12.8 at the busiest;
+across the whole loop the worst sample is 25.0). That is the failure mode, and
+it is already in the material we were given.
+**Changes if:** never. `verify_plates.py` exists to catch it; sliced from one
+frame it reports 0.0000 in ProRes 4444.
+
+> Earlier drafts of this file quoted 11.7 as "the" figure. That is the value at
+> **frame 6000 specifically**, from the cross-correlation in `00_TECHNICAL_SPEC.md`
+> §2 — a single frame, not an average. The difference tracks how bright the
+> plate is, so there is no single number; the distribution above is the honest
+> answer.
 
 ### The overlap ships at full brightness, with no blend ramp.
 **Because** the supplied plates do exactly that — column means through all 1000
@@ -25,7 +34,7 @@ downstream by the media server.
 before assuming; baking a ramp into a server that also blends would double-darken
 the seam.
 
-### Frame numbers follow the ten-minute loop (4770–7229), not 0.
+### Frame numbers follow the ten-minute loop (3270–7529), not 0.
 **Because** nobody downstream should have to work out where the segment sits.
 **Changes if:** the producer asks for 0-based. Trivial to change.
 
@@ -159,6 +168,23 @@ leaving an oddity in place. Two known oddities are deliberately preserved:
   as the insides of the cut door frames
 - window 9's two leftmost columns stop short (y 294 and 608 instead of 732) —
   this is in the original artwork, not damage
+
+### There is a second mask set, and it only ever MOVES a shape.
+**Because** the plate has the same architecture drawn into it, and the two do
+not agree — measured per shape, up to 20 px. Now that the plate *drives* the
+shaders rather than sitting behind them, a window 12 px out of register spills
+its oil field onto the masonry.
+**The first attempt was wrong:** it re-grew every boundary onto the plate's own
+border lines. Right place, wobbly edge — a boundary grown a pixel at a time
+follows every wrinkle in a 0.019 bits/pixel mp4 — and it ate 3 % of the black
+area. On a facade that has to line up to the pixel, a wobbly edge in the right
+place is worse than a clean edge a few pixels out.
+**Instead:** every shape is translated as one rigid piece. Nothing is redrawn,
+nothing is deformed, NOMAP is not touched. Verified on pixels: 21 of 29 groups
+are exact translations, 8 are extended along a flat canvas edge, 0 are deformed,
+and the black area differs from the authored one by 0 px.
+**Changes if:** the plate is replaced. Re-run `build_masks.py --align --hq` and
+check the same numbers. Full account in `06_MASKS.md`.
 
 ### Only black is non-projection.
 **Because** the artist confirmed it. The other colours describe surface *type*,

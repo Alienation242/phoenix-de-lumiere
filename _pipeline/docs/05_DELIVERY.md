@@ -6,8 +6,8 @@ whole thing. Everything below is only for when something is unusual.
 ```
   [1] Deliver      full 9788x2552, ProRes 422 HQ      51 GB    ~2 h
   [2] DeliverMax   full 9788x2552, ProRes 4444       250 GB    ~2.7 h
-  [3] Draft        half size, H.264, full length       2 GB    ~25 min
-  [4] Proof        half size, H.264, 25 seconds      170 MB    ~2 min
+  [3] Draft        half size, H.264, full length       1 GB    ~10 min
+  [4] Proof        half size, H.264, 25 seconds      180 MB    ~2 min
 ```
 
 Run **Proof** first. If it looks right, run **Deliver**.
@@ -55,7 +55,7 @@ There are two descriptions of this facade, and they do not agree everywhere.
 Each goes to **its own folder** (`Deliver_MASK-LAYER` / `Deliver_MASK-ALIGNED`)
 and every file carries the tag in its name, so both can be rendered one after
 the other and nothing is overwritten or mixed up. Which one to send is an
-artistic call — **`docs/05_MASKS.md` has the measurements and the pictures.**
+artistic call — **`docs/06_MASKS.md` has the measurements and the pictures.**
 
 ---
 
@@ -141,9 +141,12 @@ Measured on this content:
 | DNxHR HQX | 1.62 | 3.0 |
 | H.264 | 2.55 | 5.0 |
 
-For scale: **the supplied noise plates differ from each other by 1.54** in their
-own overlap. A real fault — a wrong crop, a frame offset — reads in the tens,
-not the ones.
+For scale: **the supplied noise plates differ from each other by a mean of 7.1**
+through their own overlap — measured over 16 frames across this segment, 0.0
+where the plate is black and 12.8 at the busiest. Our own worst codec is 2.55.
+So these files are several times more consistent through the seam than the
+material they sit alongside, and a real fault — a wrong crop, a frame offset —
+reads higher again.
 
 ---
 

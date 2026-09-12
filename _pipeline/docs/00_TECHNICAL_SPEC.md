@@ -99,13 +99,23 @@ chain and it costs them nothing to hand over.
 ## 4. Your segment
 
 ```
-in   2:00.000  = 120.000 s = frame 3600
-out  4:00.000  = 240.000 s = frame 7200
-length               120.000 s = 3600 frames (3600 .. 7199 inclusive)
+the piece      2:00.000 .. 4:00.000     what the audience sees
+the segment    1:50.000 .. 4:10.000  =  frames 3300 .. 7499
+rendered       1:49.000 .. 4:10.967  =  frames 3270 .. 7529  (4260 frames)
 ```
 
-Handles are flexible, so render **3570 .. 7229 (3660 frames, ±1 s)** and let the
-producer trim. That is the default in `project.json`.
+The ten seconds either side of the piece are the **hand-off**: the wall grows
+out of the untouched shared plate over 1:50–2:00 and dissolves back into it over
+4:00–4:10, so the segment can be cut anywhere in those windows and still match
+the surfaces either side. At 1:50 and 4:10 the output is the shared plate, pixel
+for pixel. The ±30 frames beyond that are conventional handles to trim.
+
+This is the default in `project.json`; every script reads it from there.
+
+> **The plate cuts to black at 4:04.97** (frame 7349 — mean luma 0.506 at 7348,
+> 0.000 at 7349). It does not fade, it cuts. The wall's own dissolve is timed to
+> land there rather than on a clock, so when the shared noise goes black this
+> surface is already black. See `04_DECISIONS.md`.
 
 ### Luminance arc (mean luma, 0–1, measured per frame)
 
@@ -119,7 +129,7 @@ producer trim. That is the default in `project.json`.
 | 3:52 – 4:00 | 0.40 | erratic, strobing, the hardest cuts of the segment |
 
 Min 0.056 @ 2:54 · Max 0.757 @ 3:57 · ends at 0.63.
-Per-frame data: `reference/noise_arc.csv` (3660 rows, regenerate with
+Per-frame data: `reference/noise_arc.csv` (4260 rows, regenerate with
 `scripts/analyse_arc.py`).
 
 > **The first seventy seconds are the whole problem.** 2:00–3:10 sits at a flat

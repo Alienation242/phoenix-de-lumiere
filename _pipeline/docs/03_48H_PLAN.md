@@ -1,5 +1,11 @@
 # 48 hours
 
+> **Historical.** This was the plan written at the start, and it was followed.
+> The piece is built, the delivery pipeline exists, and the render arithmetic
+> below is superseded by the real measured figures in `07_STATUS.md`. Kept
+> because the reasoning about what to cut under time pressure is still sound if
+> the schedule ever tightens again.
+
 One rule above all others: **work at ÷4 (2447×638) until the creative is locked.**
 Full resolution is a render problem, not a design problem. You can make every
 creative decision at a quarter scale and nothing you learn there will be wrong.
@@ -59,7 +65,12 @@ Watch it twice. Note where it sags. At ÷4 this render is minutes, not hours.
 ### H7–16 · The objects
 Spheres, cubes, pyramids, diamonds — already rendering, flat-shaded and
 vertex-snapped, in through a window and out through a door. Tune with
-`--objects N`, `--seed N`, `--snap N` (lower = more wobble).
+`--objects N` and `--seed N`.
+
+> *Superseded.* The hard-edged solids were cut and the flat-shaded PSX treatment
+> was replaced by chrome; the shapes are now spheres, tori, Mobius torsions and
+> trefoil knots. The vertex-snap flag that used to live here is gone with it.
+> See `07_STATUS.md` section 2.
 
 The motion lives in `build_objects()` and `object_state()` in
 `render_shader.py` — paths, timing, scale, fade and the over/under cross-fade

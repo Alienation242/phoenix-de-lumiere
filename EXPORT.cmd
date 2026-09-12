@@ -11,7 +11,7 @@ REM  Then run "Deliver" for the real thing.
 REM
 REM  If a second, aligned mask set has been built it also asks which one to
 REM  use. Each goes to its own folder with its own file names, so both can be
-REM  rendered one after the other. See _pipeline\docs\05_MASKS.md.
+REM  rendered one after the other. See _pipeline\docs\06_MASKS.md.
 REM
 REM  The window stays open at the end so you can read what happened.
 REM ===========================================================================

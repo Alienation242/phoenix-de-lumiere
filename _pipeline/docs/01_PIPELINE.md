@@ -181,22 +181,25 @@ cheap, period-correct depth cue and keeps geometry from fighting the plate.
 You deliver **two videos**, matching the two plates you were given. The producer
 stitches.
 
-Render **one 9788×2552 master**, then slice. Never render the plates
-independently — the 1000 px overlap must be pixel-identical in both.
+Render **one 9788×2552 frame**, then slice it. Never render the plates
+independently — the 1000 px overlap must be identical in both.
+
+Since the renderer exists this needs no intermediate sequence at all. Each frame
+is sliced in memory and written straight into both encoders, so the overlap is
+identical **by construction** rather than by process:
 
 ```
-render/master/PxDL_SW_master.%05d.png        frames 4770 .. 7229  (16-bit PNG)
-        │
-        ├─ make_delivery.ps1 -MasterPattern ...      one pass, crops on the fly
-        │     → deliver/PxDL_SW_SPSW1_4770-7229.mov     7200 x 2552
-        │       deliver/PxDL_SW_SPSW2_4770-7229.mov     3588 x 2552
-        │
-        └─ master_to_plates.ps1 ...                  lossless plate archive
-              → deliver/SPSW1/*.png  deliver/SPSW2/*.png
+render_shader.py --layout plates
+        │   one 9788x2552 frame in GPU memory
+        ├──── x    0 .. 7200  ──→  PxDL_SW_SPSW1_03270-07529_MASK-LAYER.mov   7200 x 2552
+        └──── x 6200 .. 9788  ──→  PxDL_SW_SPSW2_03270-07529_MASK-LAYER.mov   3588 x 2552
 ```
 
-Encoding straight from the master skips the intermediate sequence entirely and
-still guarantees the overlap, because both plates come from the same frames.
+`--layout canvas` writes one stitched 9788×2552 file instead, and `--layout
+both` writes all three from the same render. **`export_delivery.ps1` drives all
+of this** — see `05_DELIVERY.md`. The older `make_delivery.ps1` /
+`master_to_plates.ps1` path still works if you ever have a master sequence on
+disk from somewhere else.
 
 ### Codec — since it is your choice
 
@@ -215,18 +218,25 @@ on the drive**. That covers every downstream decision they might make.
 this (one tagged bt709, one untagged) and an untagged delivery is exactly how a
 brightness step at the seam gets introduced. `make_delivery.ps1` tags it for you.
 
-**Use the loop's own frame numbering** (4770–7229) so nobody has to guess where
-your segment sits in the ten minutes.
+**Use the loop's own frame numbering** (3270–7529) so nobody has to guess where
+the segment sits in the ten minutes. The filenames carry it, and so does
+`DELIVERY_NOTES.txt`.
 
 ### Always verify before sending
 
 ```powershell
-python verify_plates.py --a <SPSW1> --b <SPSW2> --start 4770
+python verify_plates.py --a <SPSW1> --b <SPSW2> --div 1 --tol 2
 ```
 
-It checks resolution, frame count, and that the overlap is identical. Tested
-both ways: plates sliced from one master report 0.0000; plates encoded
-independently report 11.8 and fail. For a lossy codec allow `--tol 2`.
+It checks resolution, frame count, and that the overlap holds. `export_delivery.ps1`
+runs it automatically with the right tolerance for the codec and refuses to
+report success if it fails.
+
+Tested both ways: plates sliced from one frame report **0.0000** in ProRes 4444;
+the two *supplied* source plates, encoded independently, differ by a mean of
+**7.1** through their own overlap (0.0 on black frames, 12.8 at the busiest), and
+genuinely mismatched plates read higher still. The per-codec tolerances and what
+they mean are in `05_DELIVERY.md`.
 
 ---
 

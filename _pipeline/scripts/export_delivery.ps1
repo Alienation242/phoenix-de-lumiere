@@ -85,12 +85,12 @@ $Presets = [ordered]@{
         Note = 'Overlap is BIT-IDENTICAL (0.0000). Needs a big drive - about 250 GB.'
     }
     'Draft' = @{
-        Div = 2; Codec = 'h264'; MBPerFrame = 0.5; SecPerFrame = 0.35
+        Div = 2; Codec = 'h264'; MBPerFrame = 1.0; SecPerFrame = 0.55
         What = 'Half size 4894x1276, H.264. For review, NOT for projection.'
         Note = 'Correct plate geometry, so the overlap can still be checked.'
     }
     'Proof' = @{
-        Div = 2; Codec = 'h264'; MBPerFrame = 0.5; SecPerFrame = 0.35; Seconds = 25
+        Div = 2; Codec = 'h264'; MBPerFrame = 1.0; SecPerFrame = 0.55; Seconds = 25
         What = '25 seconds only, half size, H.264. A two-minute sanity check.'
         Note = 'Run this first. If it looks right, run Deliver.'
     }
@@ -146,7 +146,7 @@ if (-not $Preset) {
     if (-not $Masks -and (Test-Path ((Get-MaskRoots 'Aligned').Masks))) {
         Line
         Line '  Two descriptions of this wall exist. Same shapes in both; some of'
-        Line '  them sit a few pixels apart - see docs/05_MASKS.md.'
+        Line '  them sit a few pixels apart - see docs/06_MASKS.md.'
         Line
         Line '    [1]  authored mask   exactly as it was drawn'
         Line '    [2]  aligned         the same shapes, moved onto the plate'
