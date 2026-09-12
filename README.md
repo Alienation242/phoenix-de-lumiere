@@ -84,6 +84,27 @@ Nothing in the pipeline needs a licensed application.
 
 ---
 
+## Tuning the look
+
+**Double-click `TUNE.cmd`.** A page opens in your browser with sliders for
+colour, contrast, the noise plate, the oil and the dither. Move one and the wall
+re-renders — a real frame through `render_shader.py`, about three seconds at
+quarter size, so what you see is what the delivery makes.
+
+- **Save** writes `_pipeline/look.json`. `render_shader.py` loads that as its
+  *defaults*, so **`EXPORT.cmd` renders your look** with nothing else to
+  remember. It prints `look  N setting(s) from …` when it does.
+- Command-line flags still beat the file, and `--no-look` ignores it.
+- **1:1 detail** shows an unscaled slice. Fitting 2447 px into a browser hides
+  exactly the dither and banding these sliders exist to judge.
+- The bookmark buttons jump to the moments that matter — near-black at 2:40,
+  strobing at 3:51. A look that only works at one of them is not finished.
+
+`look.json` is small and **belongs in git**: it is the artistic decision, and it
+is what makes another machine render the same wall.
+
+---
+
 ## Status
 
 | | |

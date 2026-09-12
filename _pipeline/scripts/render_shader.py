@@ -43,9 +43,9 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import (CFG, MASK_ROOT, REF_ROOT, RENDER_ROOT, WORK_ROOT,  # noqa: E402
+from _common import (CFG, MASK_ROOT, PIPELINE, REF_ROOT, RENDER_ROOT, WORK_ROOT,
                      MASK_VARIANTS, ffmpeg, mask_dirs, mask_variant,
-                     ref_file, source)
+                     ref_file, source)  # noqa: E402
 
 SHADERS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shaders")
 
@@ -1001,6 +1001,27 @@ def object_state(o, t):
 
 # --------------------------------------------------------------------------- textures
 
+LOOK_PATH = os.path.join(PIPELINE, "look.json")
+
+
+def load_look():
+    """What tune_look.py saved, as {dest: value}. Returns ({}, reason) on trouble.
+
+    Keys are argparse dests with underscores - "sky_gain", not "--sky-gain" -
+    because that is what set_defaults wants. tune_look.py writes them that way.
+    """
+    if not os.path.isfile(LOOK_PATH):
+        return {}, None
+    try:
+        with open(LOOK_PATH, "r") as fh:
+            d = json.load(fh)
+    except Exception as e:
+        return {}, str(e)
+    if not isinstance(d, dict):
+        return {}, "the file is not a JSON object"
+    return {k: v for k, v in d.items() if not k.startswith("_")}, None
+
+
 def load_gray(ff, path, w, h):
     raw = subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-i", path,
                           "-vf", "scale=%d:%d:flags=area" % (w, h),
@@ -1223,7 +1244,41 @@ def main():
                          "single flat colour, because the camera is orthographic")
     ap.add_argument("--horizon-hot", type=float, default=0.90,
                     help="the reflected horizon line. this is what reads as metal")
+
+    ap.add_argument("--print-defaults", action="store_true",
+                    help="dump every setting and its default as JSON, then stop. "
+                         "tune_look.py reads this so the sliders start where the "
+                         "renderer actually starts, rather than at a second copy "
+                         "of the numbers that would drift out of step")
+    ap.add_argument("--no-look", action="store_true",
+                    help="ignore look.json and use the built-in defaults")
+
+    # look.json is where tune_look.py saves what you dialled in. Applied as
+    # DEFAULTS, so anything passed on the command line still wins, and so the
+    # delivery export picks the tuned look up without needing to know about it -
+    # sliders whose values the delivery ignored would be worse than no sliders.
+    look, look_err = load_look()
+    look_applied = 0
+    if look and "--no-look" not in sys.argv and "--print-defaults" not in sys.argv:
+        known = {act.dest for act in ap._actions}
+        unknown = sorted(k for k in look if k not in known)
+        use = {k: v for k, v in look.items() if k in known}
+        ap.set_defaults(**use)
+        look_applied = len(use)
+        if unknown:
+            print("look.json: ignoring unknown setting(s): %s" % ", ".join(unknown))
+
     a = ap.parse_args()
+
+    if a.print_defaults:
+        print(json.dumps(vars(a), indent=1, sort_keys=True))
+        return
+    if look_err:
+        # Never fatal. A broken look file must not be able to stop a delivery
+        # render at two in the morning.
+        print("look.json could not be read (%s) - using built-in defaults" % look_err)
+    elif look_applied:
+        print("look      %d setting(s) from %s" % (look_applied, LOOK_PATH))
 
     if not a.png and not a.mp4:
         a.mp4 = True

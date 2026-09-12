@@ -16,6 +16,10 @@ The script checks the machine, renders, verifies the result and writes
 `DELIVERY_NOTES.txt` next to the files. It refuses to start if anything is
 missing and refuses to report success if the plates do not verify.
 
+If you have tuned the look with `TUNE.cmd`, the render prints
+`look  N setting(s) from …\look.json` on its way past — that is the confirmation
+that the delivery is using what you dialled in.
+
 ---
 
 ## Where the files go

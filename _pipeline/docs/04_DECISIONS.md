@@ -111,6 +111,40 @@ second — a 1 Hz grid. After 3:51 it breaks the grid and strobes, so go free th
 
 ---
 
+## The look
+
+### The tuned look is applied as argparse DEFAULTS, not a separate profile.
+**Because** the delivery must use what was dialled in without anyone having to
+remember to pass it. `tune_look.py` writes `_pipeline/look.json`;
+`render_shader.py` feeds it to `ap.set_defaults()` before parsing. So
+`EXPORT.cmd`, which knows nothing about any of this, renders the tuned look —
+and an explicit flag on the command line still wins, because that is what
+argparse defaults mean.
+**Practically:** `--no-look` ignores the file, `--print-defaults` reports the
+built-in values, and a corrupt or unreadable `look.json` prints a warning and
+renders with the built-ins. It cannot stop a delivery at two in the morning.
+**Changes if:** the piece ever needs more than one look at once. Then it becomes
+`--look <file>` and the sliders save presets.
+
+### The slider ranges live in tune_look.py; the values live in the renderer.
+**Because** two copies of a default drift apart, and the one that would be wrong
+is the one you are looking at. `tune_look.py` asks
+`render_shader.py --print-defaults` and fills the sliders in from that, so there
+is exactly one copy of every number and it is the renderer's. Renaming a setting
+makes the tuner say which slider it dropped rather than showing one that
+controls nothing.
+
+### The tuner is a local web page, not a desktop window.
+**Because** the python on this machine has no tkinter — no tcl/tk was installed
+with it — and the render PC cannot `pip install` anything, its DNS being broken.
+A browser is on every Windows machine and needs no packages. The server binds to
+`127.0.0.1`, so nothing off the machine can reach it, and it needs no internet.
+**Consequence:** previews cost a process start each, about 3 s a frame at ÷4
+rather than a live 30 fps view. Worth it against rendering 30-second mp4s to
+judge a slider, which is what this replaced.
+
+---
+
 ## Rendering
 
 ### TouchDesigner is not in the delivery path.
