@@ -44,6 +44,8 @@ uniform float uGrid;
 uniform float uTrimLift;      // 0 = cap and plinth are the same stone as the shaft
 uniform float uFlutes;        // grooves down the shaft. 0 = a plain cylinder
 uniform float uFluteDepth;    // how far a groove tips the normal
+uniform float uFluteAO;       // how dark a groove is regardless of the sun
+uniform vec2  uSunDir;        // where the light is, in wall space: x across
 uniform float uPlateMean;     // THIS frame's mean luma, straight from noise_arc.csv
 uniform float uPlateHP;       // 1 = keep the plate's grain, drop the wall's banding
 uniform float uPlateBlur;     // radius of "local", in canvas px
@@ -100,9 +102,17 @@ void main() {
     // light is.
     float fluteShade = 0.0;
     if (uFlutes >= 1.0 && uFluteDepth > 0.0) {
-        float dn = sin(u * uFlutes * 6.28318530718);
+        float p  = u * uFlutes * 6.28318530718;
+        float dn = sin(p);                          // the flank's own tilt
+        // 0 on a ridge, -1 at the bottom of a groove. This is what keeps the
+        // flutes visible when the sun is straight on: a real groove is shaded
+        // by its own depth whatever the light does, and without it the whole
+        // shaft would flatten out every time the sun crossed its axis.
+        float hollow = (cos(p) - 1.0) * 0.5;
         nx = clamp(nx + dn * uFluteDepth * 0.35 * body, -1.0, 1.0);
-        fluteShade = dn * uFluteDepth * body;
+        // The directional half. As uSunDir.x swings through zero the lit flank
+        // changes sides, which is what a column does when the sun crosses it.
+        fluteShade = (dn * uSunDir.x + hollow * uFluteAO) * uFluteDepth * body;
     }
     float nz = sqrt(max(0.0, 1.0 - nx * nx));
     vec3  N  = normalize(vec3(nx, 0.0, nz));

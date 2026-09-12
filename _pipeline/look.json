@@ -1,7 +1,6 @@
 {
  "_note": "Written by tune_look.py. render_shader.py loads this as its DEFAULTS, so EXPORT.cmd uses it too. A setting with 'keys' is animated: [frame, value] pairs interpolated with 'ease' (hold / linear / smooth / ease-in / ease-out), and a third element on a key overrides the ease for the segment starting there. Command-line flags still win over plain values; --no-look ignores this file entirely. Delete it for the built-in look.",
  "arc_floor": 0.46,
- "cloud": 0.58,
  "color": {
   "ease": "smooth",
   "keys": [
@@ -19,6 +18,7 @@
    [7200, "0.160,0.280,0.640"]
   ]
  },
+ "exposure": 1.0,
  "film": {
   "ease": "smooth",
   "keys": [
@@ -30,6 +30,7 @@
    [7200, "150,2800"]
   ]
  },
+ "flute_depth": 0.6,
  "levels": {
   "ease": "smooth",
   "keys": [

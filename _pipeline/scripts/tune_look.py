@@ -129,6 +129,17 @@ GROUPS = [
         ("mullion_dark", "float", 0.0, 1.0, 0.02,
          "how much light the bars take out of the glass"),
     ]),
+    ("The sun", [
+        ("sun_az", "float", -1.0, 1.0, 0.01,
+         "where the sun is across the wall. -1 hard left, +1 hard right. "
+         "Keyframe this and the light crosses the wall with the day"),
+        ("sun_el", "float", 0.0, 1.0, 0.01,
+         "how high it is. 0 on the horizon, 1 overhead"),
+        ("sun_shade", "float", 0.0, 1.0, 0.01,
+         "how hard it shades the pane chamfers. The one number for 'too much'"),
+        ("flute_ao", "float", 0.0, 1.5, 0.05,
+         "how dark a flute is from its own depth, whatever the sun does"),
+    ]),
     ("Dither and pillars", [
         ("levels", "int", 4, 128, 1,
          "colour steps on the wall. 32 is the PSX look. chrome is never quantised"),

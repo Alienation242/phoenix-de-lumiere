@@ -78,6 +78,14 @@ uniform float uArchUp;        // how much of an UPPER window is arch head, 0..1
 uniform float uArchLow;       // the same for a lower window. ~0: no fanlight
 uniform float uFanArc;        // the fanlight's inner arc, as a fraction of the
                               // head radius
+
+// Where the light is coming from, in wall space: x across, y up. It is a
+// keyframed track like everything else, so the sun crosses the wall over the
+// piece instead of sitting still - and the shading on every chamfer and every
+// flute crosses with it. Slowly: one sweep in a hundred seconds on a wall this
+// size is a drift you notice having happened, not a movement you watch.
+uniform vec2  uSunDir;
+uniform float uSunShade;      // how hard the sun shades the pane chamfers
 uniform float uFilmMin;
 uniform float uFilmMax;
 uniform float uLevels;
@@ -122,9 +130,11 @@ float rel(float x) {
 // Head space: x runs -1..1 across the opening, y 0 at the springing line and 1
 // at the apex, so r = 1 is the arch itself and the geometry is the same for
 // every window whatever its size.
-void fanLight(vec2 ouv, float archFrac, out vec2 tilt, out float bar) {
+void fanLight(vec2 ouv, float archFrac, out vec2 tilt, out float bar,
+              out vec2 cell) {
     tilt = vec2(0.0);
     bar = 0.0;
+    cell = vec2(0.0);
     float hx = ouv.x * 2.0 - 1.0;
     float hy = 1.0 - clamp(ouv.y / max(archFrac, 1e-4), 0.0, 1.0);
     float r = length(vec2(hx, hy));
@@ -151,6 +161,7 @@ void fanLight(vec2 ouv, float archFrac, out vec2 tilt, out float bar) {
              * uBevelDepth * uPanes;
     vec2 rad = normalize(vec2(hx, -hy) + vec2(1e-5));
     tilt = rad * ch * sign(uFanArc - r);
+    cell = vec2(hx, -hy);
 }
 
 // The leaded grid inside one opening. openUV is already 0..1 across THIS
@@ -165,16 +176,18 @@ void fanLight(vec2 ouv, float archFrac, out vec2 tilt, out float bar) {
 // The chamfer tips TOWARD each pane's centre, because the panes on the real
 // wall are recessed and the bars stand at the wall plane. A negative
 // --bevel-depth turns them back into raised panels.
-void paneGrid(vec2 ouv, float rows, float archFrac, out vec2 tilt, out float bar) {
+void paneGrid(vec2 ouv, float rows, float archFrac, out vec2 tilt,
+              out float bar, out vec2 cell) {
     tilt = vec2(0.0);
     bar = 0.0;
+    cell = vec2(0.0);
     if (uPanes <= 0.0 || uPaneCols < 1.0 || rows < 1.0) return;
 
     // Above the springing line is the head. The grid gets the rectangular part
     // ONLY - rows counted from the springing down, which is how the window was
     // built and how it was counted off the photograph.
     if (archFrac > 0.001) {
-        if (ouv.y < archFrac) { fanLight(ouv, archFrac, tilt, bar); return; }
+        if (ouv.y < archFrac) { fanLight(ouv, archFrac, tilt, bar, cell); return; }
         ouv.y = (ouv.y - archFrac) / max(1.0 - archFrac, 1e-4);
     }
 
@@ -190,6 +203,7 @@ void paneGrid(vec2 ouv, float rows, float archFrac, out vec2 tilt, out float bar
     tilt = vec2(bx * sign(0.5 - c.x), by * sign(0.5 - c.y)) * uBevelDepth;
     tilt *= uPanes;
     bar  *= uPanes;
+    cell = (c - 0.5) * 2.0;          // -1..1 inside this pane, for the shadow
 }
 
 
@@ -248,10 +262,10 @@ void main() {
     // The panes. Which row count applies is decided by the opening's own index:
     // the mattes are numbered upper windows first, then lower, then doors, so
     // one threshold separates them without a second texture.
-    vec2 paneTilt; float paneBar;
+    vec2 paneTilt, paneCell; float paneBar;
     bool isLow = (openIdx > uPaneSplit);
     paneGrid(openUV, isLow ? uPaneRowsLow : uPaneRowsUp,
-             isLow ? uArchLow : uArchUp, paneTilt, paneBar);
+             isLow ? uArchLow : uArchUp, paneTilt, paneBar, paneCell);
     lo += paneTilt;
     vec3 odir  = normalize(vec3(lo.x, lo.y, 1.0));
     vec3 onrm  = -odir;
@@ -274,6 +288,22 @@ void main() {
     // line, so they stay part of the surface at every brightness the day goes
     // through instead of turning into a grid stencilled over the top.
     oilColor *= (1.0 - paneBar * uMullionDark);
+    // paneTilt IS the local surface direction, so one dot with the light is
+    // the whole lighting model for the chamfers. Nothing is drawn: the faces
+    // that turn toward the sun brighten and the ones turning away fall off,
+    // which is why the effect moves when the sun does.
+    oilColor *= max(0.0, 1.0 + dot(paneTilt, uSunDir) * uSunShade);
+
+    // And the recess shadow, which is the part you actually SEE move. The
+    // chamfer is 12 % of a pane on each side, so re-lighting it alone changed
+    // 8 % of the window's pixels and read as nothing at all from across a
+    // hall. A sunken panel also pools a shadow against whichever edge the sun
+    // is behind - that is a soft gradient across the whole pane, it slides
+    // from one side to the other as the sun crosses, and it is what makes this
+    // read as light moving rather than as edges twinkling.
+    vec2 sunN = normalize(uSunDir + vec2(1e-5));
+    float occl = clamp(dot(paneCell, sunN), 0.0, 1.0);
+    oilColor *= 1.0 - pow(occl, 3.0) * uSunShade * 0.85 * uPanes;
 
     // uOilBleed lifts the oil OUT of the windows and across the whole wall.
     // At 0 this line is exactly what it always was. At 1 the thin film covers

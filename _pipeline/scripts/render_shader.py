@@ -1351,6 +1351,28 @@ def main():
                     help="the separation between panes, as a fraction of a pane")
     ap.add_argument("--mullion-dark", type=float, default=0.45,
                     help="how much light the bars take out of the glass")
+    # ---- the sun ----------------------------------------------------------
+    # A light direction, not a light source: everything it touches is a normal
+    # that already exists - the pane chamfers and the pillar flutes - so moving
+    # it moves their shading and nothing else. Keyframe it and the light
+    # crosses the wall with the day.
+    #
+    # Kept slow on purpose. The wall is around 12 m tall and 38 m wide, and at
+    # that size anything you can watch moving is too fast. The default track in
+    # look.json takes about a hundred seconds to go from one side to the other,
+    # which reads as the light having changed rather than as movement.
+    ap.add_argument("--sun-az", type=float, default=0.0,
+                    help="where the sun is across the wall. -1 hard left, "
+                         "+1 hard right, 0 straight on")
+    ap.add_argument("--sun-el", type=float, default=0.55,
+                    help="how high the sun is. 0 on the horizon, 1 overhead")
+    ap.add_argument("--sun-shade", type=float, default=0.35,
+                    help="how hard the sun shades the pane chamfers. This is "
+                         "the one number for 'too much'")
+    ap.add_argument("--flute-ao", type=float, default=0.5,
+                    help="how dark a flute is from its own depth, regardless "
+                         "of the sun. Without it the shaft flattens whenever "
+                         "the sun crosses its axis")
     ap.add_argument("--flutes", type=float, default=5.0,
                     help="grooves down a pillar shaft. 0 is a plain cylinder")
     ap.add_argument("--flute-depth", type=float, default=0.22,
@@ -1966,6 +1988,8 @@ def main():
         setu(bg_prog, "uArchUp", a.arch_upper)
         setu(bg_prog, "uArchLow", a.arch_lower)
         setu(bg_prog, "uFanArc", a.fan_arc)
+        setu(bg_prog, "uSunDir", (a.sun_az, a.sun_el))
+        setu(bg_prog, "uSunShade", a.sun_shade)
         setu(bg_prog, "uColor", tuple(col))
         setu(bg_prog, "uLevels", a.levels)
         # uGrid is the dither cell in RENDER pixels, so it must NOT track --div.
@@ -2143,6 +2167,8 @@ def main():
             setu(pil_prog, "uIntro", scene)
             setu(pil_prog, "uFlutes", a.flutes)
             setu(pil_prog, "uFluteDepth", a.flute_depth)
+            setu(pil_prog, "uFluteAO", a.flute_ao)
+            setu(pil_prog, "uSunDir", (a.sun_az, a.sun_el))
             setu(pil_prog, "uSaturation", a.saturation)
             setu(pil_prog, "uLevels", a.levels)
             setu(pil_prog, "uGrid", a.dither_grid)
