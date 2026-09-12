@@ -86,6 +86,20 @@ uniform float uFanArc;        // the fanlight's inner arc, as a fraction of the
 // size is a drift you notice having happened, not a movement you watch.
 uniform vec2  uSunDir;
 uniform float uSunShade;      // how hard the sun shades the pane chamfers
+
+// ---- the glass remembers being passed through -----------------------------
+// An object crossing the wall plane leaves a ring expanding from where it went
+// through. Positions are in CANVAS px, not uv, because uv on a 9788x2552 wall
+// is anisotropic by nearly four to one and a ring drawn in it would be an
+// ellipse. uImpact is xy = where, z = seconds since, w = the object's radius.
+uniform vec2  uCanvas;
+uniform int   uImpactN;
+uniform vec4  uImpact[8];
+uniform float uRippleAmp;     // how far a ripple tips the glass
+uniform float uRippleFreq;    // radians per canvas px
+uniform float uRippleOmega;   // radians per second, = speed * freq
+uniform float uRippleSpread;  // how far the disturbance reaches, in radii
+uniform float uRippleLife;    // seconds before it has gone
 uniform float uFilmMin;
 uniform float uFilmMax;
 uniform float uLevels;
@@ -162,6 +176,40 @@ void fanLight(vec2 ouv, float archFrac, out vec2 tilt, out float bar,
     vec2 rad = normalize(vec2(hx, -hy) + vec2(1e-5));
     tilt = rad * ch * sign(uFanArc - r);
     cell = vec2(hx, -hy);
+}
+
+// The ring an object leaves in the glass on its way through. It is added to
+// the pane tilt, so it moves the same normals the chamfers and the sun already
+// use - which is why it recolours the interference AND swings the sun shading,
+// rather than being a pattern drawn over the top.
+vec2 rippleTilt(vec2 atPx) {
+    vec2 acc = vec2(0.0);
+    if (uRippleAmp <= 0.0) return acc;
+    for (int i = 0; i < uImpactN; i++) {
+        vec2  c    = uImpact[i].xy;
+        float age  = uImpact[i].z;
+        float rad  = max(uImpact[i].w, 1.0);
+        vec2  dv   = atPx - c;
+        float d    = length(dv);
+        // Concentric rings that travel outward but stay ANCHORED to where
+        // the object went through, and die away in place.
+        //
+        // The first version was a single crest at age * speed, which is what
+        // a real impact front does and is useless here: at 900 px/s it left a
+        // 332 px window in a third of a second and spent the rest of its life
+        // ringing solid masonry two thousand pixels away. Measured at a
+        // typical frame, the crest was at 2406 px and the window it came from
+        // saw nothing at all.
+        //
+        // So the PHASE travels - the rings still move outward - while the
+        // envelope hangs on the impact point and fades. That is the drop-in-
+        // water read, and it stays where the object actually was.
+        float atten = exp(-d / max(rad * uRippleSpread, 1.0));
+        float life  = exp(-age / max(uRippleLife, 1e-3));
+        acc += normalize(dv + vec2(1e-5))
+             * sin(d * uRippleFreq - age * uRippleOmega) * atten * life;
+    }
+    return acc * uRippleAmp;
 }
 
 // The leaded grid inside one opening. openUV is already 0..1 across THIS
@@ -266,6 +314,8 @@ void main() {
     bool isLow = (openIdx > uPaneSplit);
     paneGrid(openUV, isLow ? uPaneRowsLow : uPaneRowsUp,
              isLow ? uArchLow : uArchUp, paneTilt, paneBar, paneCell);
+    // Only in the glass. A door is not a pane and the masonry does not ring.
+    paneTilt += rippleTilt(uv * uCanvas) * mWin * inOpen;
     lo += paneTilt;
     vec3 odir  = normalize(vec3(lo.x, lo.y, 1.0));
     vec3 onrm  = -odir;

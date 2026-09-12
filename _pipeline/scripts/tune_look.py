@@ -129,6 +129,19 @@ GROUPS = [
         ("mullion_dark", "float", 0.0, 1.0, 0.02,
          "how much light the bars take out of the glass"),
     ]),
+    ("Ripple - the glass reacting", [
+        ("ripple", "float", 0.0, 3.0, 0.05,
+         "how far a ripple tips the glass when an object comes through. 0 is "
+         "off; around 2.5 it starts to own the window"),
+        ("ripple_len", "float", 60.0, 600.0, 10.0,
+         "wavelength in canvas px. about 258 px is a metre on this wall"),
+        ("ripple_speed", "float", 0.0, 2500.0, 50.0,
+         "how fast the rings travel outward, canvas px per second"),
+        ("ripple_spread", "float", 1.0, 14.0, 0.5,
+         "how far the disturbance reaches, in object radii"),
+        ("ripple_life", "float", 0.1, 4.0, 0.05,
+         "seconds before it has died away"),
+    ]),
     ("The sun", [
         ("sun_az", "float", -1.0, 1.0, 0.01,
          "where the sun is across the wall. -1 hard left, +1 hard right. "

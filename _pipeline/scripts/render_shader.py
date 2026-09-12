@@ -1158,6 +1158,36 @@ def load_look(path=None):
     return static, tracks, None
 
 
+def crossing_events(o, samples=200):
+    """When and where this object passes THROUGH the wall plane.
+
+    wall_z is negative out beyond the wall and positive in the room, so a sign
+    change is the object physically going through a hole - once on the way in
+    at its window, once on the way out at its door.
+
+    Solved once, here, rather than watched for per frame: a ripple has to know
+    how OLD an impact is, and a per-frame sign test only ever knows "now".
+    """
+    out = []
+    prev = None
+    for i in range(samples + 1):
+        t = o["t0"] + (i / float(samples)) * o["dur"]
+        st = object_state(o, t)
+        if st is None:
+            prev = None
+            continue
+        pos, wall_z, scale = st[0], st[1], st[2]
+        if prev is not None and (prev[1] < 0.0) != (wall_z < 0.0):
+            # linear between two samples is plenty at this density
+            f = prev[1] / (prev[1] - wall_z) if (prev[1] != wall_z) else 0.5
+            out.append((prev[0] + (t - prev[0]) * f,
+                        prev[2][0] + (pos[0] - prev[2][0]) * f,
+                        prev[2][1] + (pos[1] - prev[2][1]) * f,
+                        max(scale, 1.0)))
+        prev = (t, wall_z, pos, scale)
+    return out
+
+
 def load_gray(ff, path, w, h):
     raw = subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-i", path,
                           "-vf", "scale=%d:%d:flags=area" % (w, h),
@@ -1359,6 +1389,31 @@ def main():
                     help="the separation between panes, as a fraction of a pane")
     ap.add_argument("--mullion-dark", type=float, default=0.45,
                     help="how much light the bars take out of the glass")
+    # ---- the ripple -------------------------------------------------------
+    # Objects come through the windows. Now the glass reacts: a ring leaves the
+    # point where one crossed the wall plane and spreads, tipping the same
+    # normals the chamfers and the sun already use - so it recolours the
+    # interference and swings the sun shading with it rather than being an
+    # effect laid on top.
+    #
+    # Sized against the wall, not the screen. At 9788 px across roughly 38 m,
+    # one metre is about 258 px, so the default 220 px wavelength is a ripple
+    # every 0.85 m and 900 px/s is about 3.5 m/s - a wave you can follow
+    # crossing a window rather than a shimmer.
+    ap.add_argument("--ripple", type=float, default=1.2,
+                    help="how far a ripple tips the glass. 0 is off. 0.45 was "
+                         "barely there; 2.5 starts to own the window")
+    ap.add_argument("--ripple-len", type=float, default=220.0,
+                    help="wavelength in canvas px. ~258 px is a metre")
+    ap.add_argument("--ripple-speed", type=float, default=900.0,
+                    help="how fast the ring spreads, canvas px per second")
+    ap.add_argument("--ripple-spread", type=float, default=5.0,
+                    help="how far the disturbance reaches, in object radii. "
+                         "5 puts a small object's ripple across its own window "
+                         "and no further")
+    ap.add_argument("--ripple-life", type=float, default=1.1,
+                    help="seconds before a ripple has gone")
+
     # ---- the sun ----------------------------------------------------------
     # A light direction, not a light source: everything it touches is a normal
     # that already exists - the pane chamfers and the pillar flutes - so moving
@@ -1723,6 +1778,28 @@ def main():
     print("objects   %d  ->  door %d at x %d (%dx%d)"
           % (len(objs), target["index"], target["cx"], target["w"], target["h"]))
 
+    # Solved whatever --ripple currently says, because it is a keyframeable
+    # track: a look that starts the ripple at 0 and brings it in later would
+    # otherwise find no crossings to ring, having skipped this at startup. It
+    # is two crossings per object and the shader early-outs at zero anyway.
+    impacts = []
+    if objs:
+        for o in objs:
+            impacts += crossing_events(o)
+        impacts.sort()
+        if impacts:
+            rr = [i[3] for i in impacts]
+            print("ripple    %d crossing(s), radius %.0f-%.0f px, %.0f px "
+                  "wavelength, %.1f s life"
+                  % (len(impacts), min(rr), max(rr), a.ripple_len, a.ripple_life))
+    # Reused every frame rather than reallocated: this is inside the hot loop.
+    ripple_buf = np.zeros((8, 4), "f4")
+    impact_u = bg_prog.get("uImpact", None)
+    if impact_u is None:
+        impact_u = bg_prog.get("uImpact[0]", None)
+    if a.ripple > 0.0 and impact_u is None:
+        print("ripple    WARNING: the shader has no uImpact array - no ripples")
+
     regions = json.load(open(os.path.join(REF_ROOT, "facade_regions.json")))["regions"]
     cols = regions.get("COLUMN", [])
     col0 = cols[0] if len(cols) > 0 else {"x": 0, "y": 0, "w": 1, "h": 1}
@@ -2004,6 +2081,36 @@ def main():
         setu(bg_prog, "uFanArc", a.fan_arc)
         setu(bg_prog, "uSunDir", (a.sun_az, a.sun_el))
         setu(bg_prog, "uSunShade", a.sun_shade)
+
+        # Which crossings are still ringing at THIS frame. The list is short -
+        # two per object over the whole segment - so a scan is cheaper than
+        # anything cleverer, and only the freshest few ever reach the shader.
+        # Past three lifetimes exp(-3) is 5 %, which is nothing on a wall.
+        act = []
+        for (ti, ix, iy, irad) in impacts:
+            age = t - ti
+            if 0.0 <= age <= a.ripple_life * 3.0:
+                act.append((age, ix, iy, irad))
+        act.sort()
+        act = act[:8]
+        ripple_buf[:] = 0.0
+        for i, (age, ix, iy, irad) in enumerate(act):
+            ripple_buf[i] = (ix, iy, age, irad)
+        setu(bg_prog, "uImpactN", len(act))
+        # GL reports an array uniform under its FIRST ELEMENT's name, so this
+        # is "uImpact[0]" on some drivers and "uImpact" on others. Looking for
+        # only one of them silently skipped the write, left every impact at
+        # (0,0,0,0), and made the whole effect do nothing at all while still
+        # reporting 52 crossings quite happily.
+        if impact_u is not None:
+            impact_u.write(ripple_buf.tobytes())
+        setu(bg_prog, "uCanvas", (float(CW), float(CH)))
+        setu(bg_prog, "uRippleAmp", a.ripple)
+        setu(bg_prog, "uRippleFreq", 6.283185307179586 / max(a.ripple_len, 1.0))
+        setu(bg_prog, "uRippleOmega",
+             a.ripple_speed * 6.283185307179586 / max(a.ripple_len, 1.0))
+        setu(bg_prog, "uRippleSpread", a.ripple_spread)
+        setu(bg_prog, "uRippleLife", a.ripple_life)
         setu(bg_prog, "uColor", tuple(col))
         setu(bg_prog, "uLevels", a.levels)
         # uGrid is the dither cell in RENDER pixels, so it must NOT track --div.
