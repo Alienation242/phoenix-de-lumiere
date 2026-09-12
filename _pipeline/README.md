@@ -16,14 +16,14 @@ docs/05_MASKS.md             the two mask sets, and which one is right
 
 project.json                 every constant. the scripts read it, so edit it here
 masks/                       31 cleaned region mattes, full canvas + per-plate
-masks_noise/                 the same 31, traced out of the shared noise plate
+masks_aligned/               the same 31, moved onto the shared noise plate
 reference/                   canvas_layout.png        geometry diagram for the producer
                              openings.json            all 27 windows and doors
                              PxDL_SW_OPENING_ID_*     R=opening index, GB=local UV
                              PxDL_SW_OPENING_SDF_*    distance from opening edges
                              facade_regions.json/csv  every region rectangle
                              noise_arc.csv            per-frame luma + motion
-reference_noise/             the same, for the traced set, plus
+reference_aligned/           the same, for the aligned set, plus
                              PxDL_SW_NOISE_STATIC_*   the plate with the dither
                                                       averaged away - the
                                                       architecture it draws

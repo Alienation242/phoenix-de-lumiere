@@ -44,7 +44,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _common import (CFG, MASK_ROOT, REF_ROOT, RENDER_ROOT, WORK_ROOT,  # noqa: E402
-                     MASK_VARIANTS, ffmpeg, mask_dirs, ref_file, source)
+                     MASK_VARIANTS, ffmpeg, mask_dirs, mask_variant,
+                     ref_file, source)
 
 SHADERS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shaders")
 
@@ -1046,16 +1047,17 @@ def main():
     ap.add_argument("--preview-width", type=int, default=0,
                     help="downscale the MP4 to this width (render stays full size)")
     ap.add_argument("--hq", action="store_true", help="use the ProRes masters from source_hq")
-    ap.add_argument("--masks", default="layer", choices=MASK_VARIANTS,
+    ap.add_argument("--masks", default="layer",
+                    choices=tuple(MASK_VARIANTS) + ("noise",),
                     help="which description of the facade to render against. "
-                         "'layer' is the authored colour-coded mask that came "
-                         "with the project. 'noise' is the same facade traced "
-                         "out of the shared plate itself, which draws its own "
-                         "windows, doors and columns and does not agree with "
-                         "the authored mask everywhere. Build it first with "
-                         "build_masks.py --from-noise. Output files are named "
-                         "after whichever was used, so both can be rendered "
-                         "one after the other without overwriting each other")
+                         "'layer' is the authored colour-coded mask exactly as "
+                         "drawn. 'aligned' is the same shapes, each translated "
+                         "as one rigid piece onto the border the shared plate "
+                         "draws - nothing redrawn, nothing deformed. Build it "
+                         "first with build_masks.py --align. Output files are "
+                         "named after whichever was used, so both can be "
+                         "rendered one after the other without overwriting "
+                         "each other. 'noise' is the old name for 'aligned'")
     ap.add_argument("--log", default="",
                     help="also write everything printed here to this file. The "
                          "live progress bar is left out of it")
@@ -1182,6 +1184,23 @@ def main():
                          "carries the depth instead")
     ap.add_argument("--pillar-wobble", type=float, default=3.0)
     ap.add_argument("--pillar-gain", type=float, default=1.15)
+    ap.add_argument("--trim-lift", type=float, default=0.0,
+                    help="brighten the capital and plinth relative to the shaft. "
+                         "0 = one continuous stone, which is what it should be. "
+                         "This was 0.6, and measured on the wall that made the "
+                         "cap 41%% brighter than the shaft and the plinth 15%% - "
+                         "so the shaft read as a dark band lying across the "
+                         "pillar between them")
+    ap.add_argument("--plate-hp", type=float, default=1.0,
+                    help="how much of the wall's own banding to take off the "
+                         "pillars. 1 = all of it, and the plate's grain is kept "
+                         "in full. 0 = the old behaviour, where the wall's "
+                         "bright bands at the capital and the base printed "
+                         "straight through the pillar and the shaft between "
+                         "them read as a shadow")
+    ap.add_argument("--plate-blur", type=float, default=110.0,
+                    help="what counts as 'local' for --plate-hp, in canvas px. "
+                         "Bigger than the dither, smaller than the wall's bands")
     ap.add_argument("--pillar-z", type=float, default=1500.0,
                     help="how near the pillars stand, in the same units as the "
                          "objects (-900 out beyond the wall .. +1100 closest). "
@@ -1211,10 +1230,11 @@ def main():
     open_log(a.log)
 
     global MASK_ROOT, REF_ROOT
+    a.masks = mask_variant(a.masks)
     MASK_ROOT, REF_ROOT = mask_dirs(a.masks)
     if not os.path.isdir(MASK_ROOT):
         sys.exit("the '%s' mask set has not been built yet - there is no %s.\n"
-                 "Build it with:   python build_masks.py --from-noise"
+                 "Build it with:   python build_masks.py --align"
                  % (a.masks, MASK_ROOT))
     seg = CFG["segment"]
     if a.start is None:
@@ -1235,8 +1255,8 @@ def main():
     print("render    %d x %d  (1/%d)   frames %d..%d  (%d, %.1f s)"
           % (W, H, a.div, a.start, a.start + a.count - 1, a.count, a.count / float(FPS)))
     print("masks     %s  (%s)"
-          % (a.masks, "authored colour mask" if a.masks == "layer"
-             else "traced out of the noise plate"))
+          % (a.masks, "the authored colour mask, as drawn" if a.masks == "layer"
+             else "the authored shapes, aligned to the plate"))
 
     ctx = moderngl.create_standalone_context(require=330)
     print("gpu       %s" % ctx.info["GL_RENDERER"])
@@ -1809,6 +1829,10 @@ def main():
             setu(pil_prog, "uStone", tuple(stone))
             setu(pil_prog, "uSkyGain", a.sky_gain)
             setu(pil_prog, "uGain", a.pillar_gain)
+            setu(pil_prog, "uTrimLift", a.trim_lift)
+            setu(pil_prog, "uPlateMean", plate_mean)
+            setu(pil_prog, "uPlateHP", a.plate_hp)
+            setu(pil_prog, "uPlateBlur", a.plate_blur)
             setu(pil_prog, "uIntro", scene)
             setu(pil_prog, "uSaturation", a.saturation)
             setu(pil_prog, "uLevels", a.levels)

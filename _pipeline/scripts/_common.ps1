@@ -41,12 +41,19 @@ $script:DeliverRoot = Resolve-Root 'PXDL_DELIVER_ROOT' $Cfg.dirs.deliver
 $script:MaskRoot    = Join-Path $ProjectRoot $Cfg.dirs.masks
 $script:RefRoot     = Join-Path $ProjectRoot $Cfg.dirs.reference
 
-# The same facade described two ways - see build_masks.py. 'Layer' is the
-# authored colour-coded mask; 'Noise' is the facade traced out of the shared
-# noise plate, which draws its own windows, doors and columns.
+# The same facade described two ways - see build_masks.py and docs/05_MASKS.md.
+# 'Layer' is the authored colour-coded mask exactly as drawn. 'Aligned' is the
+# same shapes, each translated as one rigid piece onto the border the shared
+# noise plate draws - nothing redrawn, nothing deformed, black area untouched.
+# 'Noise' is what 'Aligned' used to be called.
+function Get-MaskVariant([string]$Name) {
+    if ($Name -eq 'Noise') { return 'Aligned' }
+    if ($Name) { return $Name }
+    return 'Layer'
+}
 function Get-MaskRoots([string]$Variant = 'Layer') {
-    if ($Variant -eq 'Noise') {
-        return @{ Masks = ($MaskRoot + '_noise'); Reference = ($RefRoot + '_noise') }
+    if ((Get-MaskVariant $Variant) -eq 'Aligned') {
+        return @{ Masks = ($MaskRoot + '_aligned'); Reference = ($RefRoot + '_aligned') }
     }
     return @{ Masks = $MaskRoot; Reference = $RefRoot }
 }

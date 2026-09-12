@@ -9,14 +9,14 @@
       .\export_delivery.ps1 -Preset Deliver
       .\export_delivery.ps1 -Preset Deliver -Yes        # no confirmation
       .\export_delivery.ps1 -Preset Draft               # quick half-res look
-      .\export_delivery.ps1 -Preset Deliver -Masks Noise
+      .\export_delivery.ps1 -Preset Deliver -Masks Aligned
 
   -Masks picks which description of the facade to render against. 'Layer' is
-  the authored colour-coded mask that came with the project; 'Noise' is the
-  same facade traced out of the shared noise plate, which draws its own
-  windows, doors and columns and does not agree with the authored mask
-  everywhere. The two go to different folders and carry different file names,
-  so both can be rendered one after the other and compared.
+  the authored colour-coded mask exactly as drawn; 'Aligned' is the same
+  shapes, each translated as one rigid piece onto the border the shared noise
+  plate draws - nothing redrawn, nothing deformed, and the black area is not
+  touched at all. The two go to different folders and carry different file
+  names, so both can be rendered one after the other and compared.
 
   WHAT COMES OUT
 
@@ -41,7 +41,7 @@ param(
     [switch] $HQ,
     [ValidateSet('Plates', 'Stitched', 'Both')]
     [string] $Layout = 'Plates',
-    [ValidateSet('Layer', 'Noise')]
+    [ValidateSet('Layer', 'Aligned', 'Noise')]
     [string] $Masks,
     [string] $Out,
     [int]    $Threads = 4
@@ -143,19 +143,19 @@ if (-not $Preset) {
     }
     $Preset = @($Presets.Keys)[$idx - 1]
 
-    if (-not $Masks -and (Test-Path ((Get-MaskRoots 'Noise').Masks))) {
+    if (-not $Masks -and (Test-Path ((Get-MaskRoots 'Aligned').Masks))) {
         Line
-        Line '  Two descriptions of this wall exist. They differ by a few pixels'
-        Line '  around every window and door - see 05_MASKS.md.'
+        Line '  Two descriptions of this wall exist. Same shapes in both; some of'
+        Line '  them sit a few pixels apart - see docs/05_MASKS.md.'
         Line
-        Line '    [1]  authored mask          the one supplied with the project'
-        Line '    [2]  traced from the noise  boundaries taken off the shared plate'
+        Line '    [1]  authored mask   exactly as it was drawn'
+        Line '    [2]  aligned         the same shapes, moved onto the plate'
         Line
         $mp = Read-Host 'Which one? [1]'
-        $Masks = if ($mp -eq '2') { 'Noise' } else { 'Layer' }
+        $Masks = if ($mp -eq '2') { 'Aligned' } else { 'Layer' }
     }
 }
-if (-not $Masks) { $Masks = 'Layer' }
+$Masks = Get-MaskVariant $Masks
 $MaskSet = Get-MaskRoots $Masks
 $MaskTag = "MASK-" + $Masks.ToUpper()
 $P = $Presets[$Preset]
@@ -202,8 +202,8 @@ Line ("  layout      {0}" -f $(switch ($Layout) {
     'Plates'   { 'two projector plates (matches the supplied noise)' }
     'Stitched' { 'one stitched canvas file' }
     default    { 'BOTH - two plates AND one stitched canvas, from one render' } }))
-Line ("  masks       {0}" -f $(if ($Masks -eq 'Noise') {
-    'traced out of the shared noise plate' } else { 'the authored colour mask' }))
+Line ("  masks       {0}" -f $(if ($Masks -eq 'Aligned') {
+    'the authored shapes, aligned to the shared plate' } else { 'the authored colour mask, as drawn' }))
 Line ("  codec       {0}" -f $P.Codec)
 Line ("  output      {0}" -f $outDir)
 Line ("  needs       about {0} GB and roughly {1} minutes" -f $needGB, $mins)
@@ -249,8 +249,8 @@ foreach ($n in 'openings.json', 'facade_regions.json',
     }
 }
 if ($maskMissing) {
-    if ($Masks -eq 'Noise') {
-        $fail += 'the noise-traced mask set is not built. Run: python _pipeline\scripts\build_masks.py --from-noise'
+    if ($Masks -eq 'Aligned') {
+        $fail += 'the aligned mask set is not built. Run: python _pipeline\scripts\build_masks.py --align'
     } else {
         $fail += 'the mask set is incomplete. Run: python _pipeline\scripts\build_masks.py'
     }
@@ -422,7 +422,7 @@ FRAMES AND TIMING
   black at 4:04.97, this surface is already black.
 
 FORMAT
-  mask set     $(if ($Masks -eq 'Noise') { 'traced from the shared noise plate' } else { 'the authored colour-coded mask' })
+  mask set     $(if ($Masks -eq 'Aligned') { 'the authored shapes, aligned to the shared plate' } else { 'the authored colour-coded mask, as drawn' })
   codec        $($P.Codec)
   noise source $(if ($HQ) { 'the high-quality masters' } else { 'the supplied preview mp4s (0.019 bits/pixel)' })
   frame rate   30.000 fps, constant

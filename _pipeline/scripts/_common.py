@@ -37,23 +37,35 @@ DELIVER_ROOT = _root("PXDL_DELIVER_ROOT", CFG["dirs"]["deliver"])
 MASK_ROOT = os.path.join(ROOT, CFG["dirs"]["masks"])
 REF_ROOT = os.path.join(ROOT, CFG["dirs"]["reference"])
 
-# The same facade, described two ways. "layer" is the colour-coded mask that was
-# supplied with the project. "noise" is the facade traced out of the shared noise
-# plate itself - the plate has the windows, doors and columns drawn into it, with
-# a visible border, and the two do not agree everywhere. Both sets live side by
-# side so a render can be done either way and the two compared.
-MASK_ROOT_NOISE = MASK_ROOT + "_noise"
-REF_ROOT_NOISE = REF_ROOT + "_noise"
-MASK_VARIANTS = ("layer", "noise")
+# The same facade, described two ways.
+#
+#   layer     the colour-coded mask supplied with the project, exactly as drawn
+#   aligned   the same shapes, each translated as one rigid piece onto the
+#             border the shared noise plate draws around its own architecture
+#
+# Nothing is redrawn in "aligned" - straight edges stay straight, arches stay
+# arches, the stepped capital on each pillar is the authored one - only the
+# position changes, and only where the plate clearly says so. Both sets live
+# side by side so a render can be done either way and the two compared.
+MASK_ROOT_ALIGNED = MASK_ROOT + "_aligned"
+REF_ROOT_ALIGNED = REF_ROOT + "_aligned"
+MASK_VARIANTS = ("layer", "aligned")
+MASK_ALIASES = {"noise": "aligned"}      # what "aligned" was called before
+
+
+def mask_variant(name):
+    """Normalise a variant name, accepting the old spelling."""
+    v = MASK_ALIASES.get((name or "").lower(), (name or "").lower())
+    if v not in MASK_VARIANTS:
+        sys.exit("mask variant must be one of %s, not %r"
+                 % (" / ".join(MASK_VARIANTS), name))
+    return v
 
 
 def mask_dirs(variant="layer"):
     """(mask folder, reference folder) for a mask variant."""
-    if variant not in MASK_VARIANTS:
-        sys.exit("mask variant must be one of %s, not %r"
-                 % (" / ".join(MASK_VARIANTS), variant))
-    if variant == "noise":
-        return MASK_ROOT_NOISE, REF_ROOT_NOISE
+    if mask_variant(variant) == "aligned":
+        return MASK_ROOT_ALIGNED, REF_ROOT_ALIGNED
     return MASK_ROOT, REF_ROOT
 
 

@@ -34,6 +34,7 @@ and into _pipeline/reference:
 """
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -43,7 +44,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _common import (CFG, MASK_ROOT, REF_ROOT, ffmpeg, mask_dirs,  # noqa: E402
-                     source)
+                     mask_variant, source)
 
 W = CFG["canvas"]["w"]
 H = CFG["canvas"]["h"]
@@ -351,35 +352,6 @@ def grad_mag(a):
     return np.sqrt(gx * gx + gy * gy)
 
 
-def dist_from(mask, cap):
-    """Distance in pixels from the nearest True pixel, capped. Chamfer, iterated."""
-    d = np.where(mask, np.float32(0.0), np.float32(cap + 2))
-    for _ in range(int(cap) + 2):
-        c = d.copy()
-        c[1:, :] = np.minimum(c[1:, :], d[:-1, :] + 1.0)
-        c[:-1, :] = np.minimum(c[:-1, :], d[1:, :] + 1.0)
-        c[:, 1:] = np.minimum(c[:, 1:], d[:, :-1] + 1.0)
-        c[:, :-1] = np.minimum(c[:, :-1], d[:, 1:] + 1.0)
-        c[1:, 1:] = np.minimum(c[1:, 1:], d[:-1, :-1] + 1.4142)
-        c[:-1, :-1] = np.minimum(c[:-1, :-1], d[1:, 1:] + 1.4142)
-        c[1:, :-1] = np.minimum(c[1:, :-1], d[:-1, 1:] + 1.4142)
-        c[:-1, 1:] = np.minimum(c[:-1, 1:], d[1:, :-1] + 1.4142)
-        if np.array_equal(c, d):
-            break
-        d = c
-    return d
-
-
-def label_edges(lab):
-    """Pixels sitting on a boundary between two different labels."""
-    e = np.zeros(lab.shape, bool)
-    e[:, 1:] |= lab[:, 1:] != lab[:, :-1]
-    e[:, :-1] |= lab[:, 1:] != lab[:, :-1]
-    e[1:, :] |= lab[1:, :] != lab[:-1, :]
-    e[:-1, :] |= lab[1:, :] != lab[:-1, :]
-    return e
-
-
 def plate_borders(static, hi_pct=99.0, lo_pct=90.0, min_len=120.0, close=2.0):
     """The border lines the plate draws around its own architecture.
 
@@ -388,8 +360,8 @@ def plate_borders(static, hi_pct=99.0, lo_pct=90.0, min_len=120.0, close=2.0):
     The plate's own cloud texture is just as strong as the architecture, but
     BLOBBY. The architecture is drawn as long thin lines, so anything that does
     not run for at least min_len px is thrown away. That one filter is the
-    difference between snapping to a window edge and snapping to a smudge 20 px
-    inside it.
+    difference between locking onto a window edge and locking onto a smudge
+    20 px inside it.
 
     And the edges are not all equally strong. The top of a window is a 13/255
     step against the sky; the BOTTOM of the same window is 8/255 against the
@@ -397,8 +369,6 @@ def plate_borders(static, hi_pct=99.0, lo_pct=90.0, min_len=120.0, close=2.0):
     clouds with it, or catches neither. So it is hysteresis, as in Canny: a
     strong threshold decides where an edge definitely is, a much weaker one
     decides how far it runs, and only pieces containing a strong pixel survive.
-    Without it the bottom edges break into a dozen fragments, each too short to
-    keep - and a window with no bottom edge leaks out of its own corners.
     """
     g = grad_mag(box_blur(static, max(1, int(round(6.0 / SCALE)))))
     strong = g > np.percentile(g, hi_pct)
@@ -429,11 +399,8 @@ def plate_borders(static, hi_pct=99.0, lo_pct=90.0, min_len=120.0, close=2.0):
     return border, len(ids), int(keep.sum())
 
 
-def grow_labels(field, blocked, rounds):
-    """Flood every known label outward a pixel at a time, never entering
-    `blocked`. Two fronts meeting at a border both stop on it, which is the
-    whole point: that is where the new boundary ends up.
-    """
+def grow_labels(field, rounds):
+    """Flood every known label outward a pixel at a time into the unknown (255)."""
     unknown = field == 255
     for _ in range(rounds):
         if not unknown.any():
@@ -451,7 +418,7 @@ def grow_labels(field, blocked, rounds):
                 sh[:, -1] = 255
             take = unknown & (cand == 255) & (sh != 255)
             cand[take] = sh[take]
-        got = unknown & (cand != 255) & ~blocked
+        got = unknown & (cand != 255)
         if not got.any():
             break
         field[got] = cand[got]
@@ -459,74 +426,284 @@ def grow_labels(field, blocked, rounds):
     return field
 
 
-def trace_from_noise(lab, static, reach=44.0, smooth=4.0):
-    """Move every boundary in `lab` onto the border the plate draws.
+def outline_of(m):
+    e = np.zeros(m.shape, bool)
+    e[:, 1:] |= m[:, 1:] != m[:, :-1]
+    e[1:, :] |= m[1:, :] != m[:-1, :]
+    return e
 
-    Each region keeps a core of itself as a seed: everything further than
-    `reach` from its own boundary, PLUS its medial axis - so a 30 px mullion
-    between two windows still seeds and the two windows cannot merge into one.
-    Everything between the cores is then re-grown, blocked by the plate's border
-    lines, so a boundary with a border near it lands on that border, and a
-    boundary with none (wall against ground, say) meets in the middle, exactly
-    where it already was.
+
+def rigid_groups(lab, minpx=3000):
+    """Every shape that has to move as ONE piece.
+
+    An opening is a component of WINDOW|DOOR, not of WINDOW and DOOR
+    separately: a door is a DOOR matte plus the WINDOW strips that are its frame
+    and its leaf, and moving those apart takes the door to pieces. This is the
+    same grouping openings.json already uses, which is why it counts 27.
+
+    A pillar is a component of COLUMN|TRIM - shaft, capital and plinth are one
+    stone object.
+    """
+    out = []
+    for kind, sel in (("opening", (lab == WINDOW) | (lab == DOOR)),
+                      ("pillar", (lab == COLUMN) | (lab == TRIM))):
+        cl = components(sel)
+        ids, cnt = np.unique(cl[cl > 0], return_counts=True)
+        for cid, n in zip(ids, cnt):
+            if n >= minpx // int(SCALE * SCALE):
+                out.append((kind, cl == cid))
+    return out
+
+
+def register_to_plate(lab, static, search=28.0, prior=0.15, min_gain=2.0):
+    """Move the AUTHORED shapes onto the plate. Do not redraw them.
+
+    The authored mask is precise: straight edges, proper arches, a stepped
+    capital on each pillar. What it gets wrong is WHERE some of those shapes
+    sit - measured against the plate, up to 24 px. An earlier version of this
+    re-grew every boundary onto the plate's own border lines, which put them in
+    the right place and made them wobble, because a boundary grown a pixel at a
+    time follows every wrinkle in a 0.019 bits/pixel mp4. On a facade that has
+    to line up to the pixel, a wobbly edge in the right place is worse than a
+    clean edge a few pixels out.
+
+    So every shape is translated as one rigid piece and nothing is deformed.
+    The search maximises how much of the plate's own border line the shape's
+    outline sits on, with two guards:
+
+      * a PRIOR toward staying put. The authored position is good evidence, so
+        the further a shape wants to move the more it has to gain to justify
+        it. Without this, door 27 - whose top edge sits in a band of horizontal
+        lines where every offset scores about the same - wandered 19 px down on
+        a 9 % gain.
+      * shapes flush against a canvas edge are re-anchored to it afterwards.
+        All three doors reach the bottom of the canvas; translating one up by
+        12 px would leave a 12 px sliver of wall under it. Their edge there is
+        dead straight, so extending it back to the boundary changes the shape
+        not at all.
+
+    NOMAP is never touched. It is the only region that decides where light does
+    NOT go, and the authored one is exact.
     """
     h, w = lab.shape
+    R = max(2, int(round(search / SCALE)))
     border, n_all, n_kept = plate_borders(static)
     print("   border lines   %d ridge pieces, %d long enough to be architecture"
           % (n_all, n_kept))
-    print("                  %.2f %% of the canvas" % (100.0 * border.mean()))
+    g = grad_mag(box_blur(static, max(1, int(round(6.0 / SCALE)))))
+    gn = np.clip(g / max(np.percentile(g, 99.5), 1e-6), 0, 1)
+    # Score only where a long line runs, so the plate's cloud texture cannot
+    # pull a window off its own frame.
+    field = gn * dilate(border, max(1, int(round(3.0 / SCALE))))
 
-    reach_px = max(2, int(round(reach / SCALE)))
-    d = dist_from(label_edges(lab), reach_px)
-    nb = d.copy()
-    nb[1:, :] = np.maximum(nb[1:, :], d[:-1, :])
-    nb[:-1, :] = np.maximum(nb[:-1, :], d[1:, :])
-    nb[:, 1:] = np.maximum(nb[:, 1:], d[:, :-1])
-    nb[:, :-1] = np.maximum(nb[:, :-1], d[:, 1:])
-    core = (d > reach_px) | ((d >= 1.0) & (d >= nb))
-
-    field = np.full((h, w), 255, np.uint8)
-    field[core] = lab[core]
-    print("   seeds          %.1f %% of the canvas kept as known ground"
-          % (100.0 * core.mean()))
-
-    field = grow_labels(field, border, reach_px + 8)
-    stuck = int((field == 255).sum())
-    field = grow_labels(field, np.zeros((h, w), bool), 4 * reach_px + 64)
-    if (field == 255).any():
-        sys.exit("the trace did not close: %d px never got a label"
-                 % (field == 255).sum())
-    print("   grown          %d px sat on a border line and were split down it"
-          % stuck)
-
-    if smooth:
-        # Growing a boundary one pixel at a time leaves a staircase on it. A
-        # majority vote in a small window takes the staircase off without
-        # moving the boundary anywhere.
-        r = max(1, int(round(smooth / SCALE)))
-        best = np.zeros((h, w), np.float32)
-        out = field.copy()
-        for idx in range(len(NAMES)):
-            if not (field == idx).any():
-                continue
-            c = box_blur((field == idx).astype(np.float32), r).astype(np.float32)
-            t = c > best
-            out[t] = idx
-            best[t] = c[t]
-        field = out
-
-    print("   result         %.2f %% of the canvas changed label"
-          % (float((field != lab).mean()) * 100.0))
+    nomap = lab == NOMAP
+    groups = rigid_groups(lab)
+    print("   groups         %d (%d openings, %d pillars)"
+          % (len(groups), sum(1 for k, _ in groups if k == "opening"),
+             sum(1 for k, _ in groups if k == "pillar")))
     print()
-    print("   %-8s %10s %10s %9s" % ("region", "authored", "traced", "change"))
+    print("   %-8s %6s %6s %6s %6s   %5s %5s %8s   %s"
+          % ("what", "x", "y", "w", "h", "dx", "dy", "gain", "score"))
+
+    # ---- pass 1: where does each shape WANT to be? -----------------------
+    want = []
+    for kind, sel in groups:
+        ys, xs = np.where(outline_of(sel))
+        by, bx = np.where(sel)
+        box = (int(bx.min()), int(by.min()), int(bx.max()), int(by.max()))
+        k = (ys >= R) & (ys < h - R) & (xs >= R) & (xs < w - R)
+        oy, ox = ys[k], xs[k]
+        base = float(field[oy, ox].mean()) if oy.size >= 40 else 0.0
+        best = (base, 0, 0)
+        if base > 1e-6:
+            for dy in range(-R, R + 1):
+                for dx in range(-R, R + 1):
+                    s = float(field[oy + dy, ox + dx].mean())
+                    # the prior: earn the distance you want to travel
+                    s *= 1.0 - prior * math.hypot(dx, dy) / R
+                    if s > best[0] * (1.0 - prior * math.hypot(best[1], best[2]) / R):
+                        best = (float(field[oy + dy, ox + dx].mean()), dx, dy)
+        gain = (best[0] / base - 1) * 100 if base > 1e-6 else 0.0
+        dx, dy = (best[1], best[2]) if gain >= min_gain else (0, 0)
+        want.append(dict(kind=kind, sel=sel, box=box, base=base,
+                         score=best[0], gain=gain, dx=dx, dy=dy, note=""))
+
+    # ---- pass 2: nobody lands on anybody -----------------------------------
+    # Two rules, and a shape gives up distance rather than breaking either:
+    #
+    #   * never move INTO the black area. NOMAP is the one region that decides
+    #     where light does NOT go and the authored one is exact. Window 24 sits
+    #     flush against it; left alone it moved 20 px right and lost 20 px off
+    #     its side to the clip.
+    #   * never land on another shape. Window 22 wanted 8 px right, which put
+    #     its edge under pillar 2, and whichever was stamped second ate 5844 px
+    #     of the other.
+    #
+    # Shapes that are staying put are claimed first - they cannot give way -
+    # and the rest go in order of how much they have to gain.
+    # Every shape's ground is claimed from the start, whether or not it is going
+    # to move: otherwise a shape resolved early takes the ground out from under
+    # a neighbour that has not had its turn yet. Window 22 did exactly that to
+    # pillar 2 - it moved 8 px right into the pillar, the pillar was then held
+    # back for lack of room, and the window had already eaten 7990 px of it.
+    claimed = nomap.copy()
+    for d in want:
+        claimed |= d["sel"]
+
+    def clear(sel_yx, cx, cy, blocked):
+        ty = np.clip(sel_yx[0] + cy, 0, h - 1)
+        tx = np.clip(sel_yx[1] + cx, 0, w - 1)
+        return not blocked[ty, tx].any()
+
+    for d in sorted(want, key=lambda d: -d["gain"]):
+        sel_yx = np.where(d["sel"])
+        others = claimed & ~d["sel"]          # its own ground is its to leave
+        dx, dy = d["dx"], d["dy"]
+        if dx or dy:
+            steps = max(abs(dx), abs(dy))
+            cx = cy = 0
+            for s in range(steps, -1, -1):
+                tx_ = int(round(dx * s / float(steps)))
+                ty_ = int(round(dy * s / float(steps)))
+                if clear(sel_yx, tx_, ty_, others):
+                    cx, cy = tx_, ty_
+                    break
+            # the pull-back scales both axes together; give back whatever the
+            # collision did not actually cost, one axis at a time
+            while cx != dx:
+                nx = cx + (1 if dx > cx else -1)
+                if not clear(sel_yx, nx, cy, others):
+                    break
+                cx = nx
+            while cy != dy:
+                ny = cy + (1 if dy > cy else -1)
+                if not clear(sel_yx, cx, ny, others):
+                    break
+                cy = ny
+            if (cx, cy) != (dx, dy):
+                d["note"] = "  held back, %+d %+d wanted" % (dx, dy)
+            d["dx"], d["dy"] = cx, cy
+        ty = np.clip(sel_yx[0] + d["dy"], 0, h - 1)
+        tx = np.clip(sel_yx[1] + d["dx"], 0, w - 1)
+        claimed = others
+        claimed[ty, tx] = True
+
+    moves = []
+    tb = ta = 0.0
+    for d in want:
+        x0, y0, x1, y1 = d["box"]
+        moved = bool(d["dx"] or d["dy"])
+        tb += d["base"]
+        ta += d["score"] if moved else d["base"]
+        moves.append((d["kind"], d["sel"], d["dx"], d["dy"]))
+        print("   %-8s %6d %6d %6d %6d   %+5d %+5d %+7.1f%%   %.4f -> %.4f%s"
+              % (d["kind"], int(x0 * SCALE), int(y0 * SCALE),
+                 int((x1 - x0 + 1) * SCALE), int((y1 - y0 + 1) * SCALE),
+                 int(d["dx"] * SCALE), int(d["dy"] * SCALE), d["gain"], d["base"],
+                 d["score"] if moved else d["base"], d["note"]))
+    n_moved = sum(1 for _, _, dx, dy in moves if dx or dy)
+    print()
+    print("   moved          %d of %d.  mean score %.4f -> %.4f  (%+.1f %%)"
+          % (n_moved, len(moves), tb / len(moves), ta / len(moves),
+             (ta / tb - 1) * 100 if tb else 0.0))
+
+    # ---- rebuild --------------------------------------------------------
+    # Lift every moving shape off the wall, put it back down where it belongs,
+    # and let the background close over whatever sliver it used to cover. The
+    # shapes go back FIRST, so the only pixels left to fill are the few that
+    # the move uncovered - never the whole hole.
+    out = lab.copy()
+    for _, sel, dx, dy in moves:
+        if dx or dy:
+            out[sel] = 255
+
+    overlaps = 0
+    for _, sel, dx, dy in moves:
+        if not (dx or dy):
+            continue                     # already exactly where it belongs
+        ys, xs = np.where(sel)
+        ty, tx = ys + dy, xs + dx
+        ok = (ty >= 0) & (ty < h) & (tx >= 0) & (tx < w)
+        ty, tx, sy, sx = ty[ok], tx[ok], ys[ok], xs[ok]
+        # anything that is already a shape here belongs to a DIFFERENT shape -
+        # this one's old footprint was vacated to 255 before any stamping
+        overlaps += int(np.isin(out[ty, tx], (WINDOW, DOOR, COLUMN, TRIM)).sum())
+        out[ty, tx] = lab[sy, sx]
+
+    # ---- put the edge-anchored shapes back against their edge ------------
+    filled = 0
+    for _, sel, dx, dy in moves:
+        if not (dx or dy):
+            continue
+        for axis, edge in (("top", 0), ("bottom", h - 1)):
+            row = sel[edge]
+            if not row.any():
+                continue
+            cols = np.where(row)[0] + dx
+            cols = cols[(cols >= 0) & (cols < w)]
+            if not cols.size:
+                continue
+            val = lab[edge, np.clip(cols - dx, 0, w - 1)]
+            if edge == 0:
+                for step in range(max(dy, 0)):
+                    out[step, cols] = val
+                    filled += cols.size
+            else:
+                for step in range(max(-dy, 0)):
+                    out[h - 1 - step, cols] = val
+                    filled += cols.size
+        for edge in (0, w - 1):
+            col = sel[:, edge]
+            if not col.any():
+                continue
+            rows = np.where(col)[0] + dy
+            rows = rows[(rows >= 0) & (rows < h)]
+            if not rows.size:
+                continue
+            val = lab[np.clip(rows - dy, 0, h - 1), edge]
+            span = max(dx, 0) if edge == 0 else max(-dx, 0)
+            for step in range(span):
+                out[rows, edge + step if edge == 0 else w - 1 - step] = val
+                filled += rows.size
+
+    # Close the sliver a move uncovered with BACKGROUND only. Letting every
+    # label grow into it let the window that had just been moved grow straight
+    # back into the gap it came from, which put a 1 px rim back around every
+    # shape it touched - the shape was no longer the authored shape.
+    uncovered = int((out == 255).sum())
+    bg = out.copy()
+    bg[np.isin(out, (WINDOW, DOOR, COLUMN, TRIM))] = 255
+    # The flood has to travel through shape pixels to reach a sliver that is
+    # walled in by one, so it needs room to run - not just the size of the move.
+    bg = grow_labels(bg, max(400, 2 * R + 16))
+    take = (out == 255) & (bg != 255)
+    out[take] = bg[take]
+    if (out == 255).any():
+        sys.exit("the wall did not close over %d px the move uncovered"
+                 % (out == 255).sum())
+    print("   uncovered      %d px of wall closed over behind the moved shapes"
+          % uncovered)
+
+    # ---- NOMAP is exactly as authored, always ----------------------------
+    was = lab == NOMAP
+    out[was] = NOMAP
+    stolen = int(((out == NOMAP) & ~was).sum())
+    if stolen:
+        out[(out == NOMAP) & ~was] = WALL
+    print("   edge anchors   %d px put back against a canvas edge" % filled)
+    print("   black area     restored exactly as authored (%d px)" % int(was.sum()))
+    if overlaps:
+        print("   ! %d px where two moved shapes landed on each other" % overlaps)
+
+    print()
+    print("   %-8s %10s %10s %9s" % ("region", "authored", "aligned", "change"))
     for idx in (WALL, WINDOW, BASE, NOMAP, DOOR, COLUMN, TRIM):
         a = int((lab == idx).sum())
-        b = int((field == idx).sum())
-        if not a:
-            continue
-        print("   %-8s %10d %10d %+8.1f %%"
-              % (NAMES[idx], a, b, (b / float(a) - 1) * 100))
-    return field
+        b = int((out == idx).sum())
+        if a:
+            print("   %-8s %10d %10d %+8.1f %%"
+                  % (NAMES[idx], a, b, (b / float(a) - 1) * 100))
+    return out
 
 
 def static_plate(frames, use_hq, cache):
@@ -610,30 +787,41 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-extras", action="store_true",
                     help="skip the opening ID map and SDF (much faster)")
-    ap.add_argument("--from-noise", action="store_true",
-                    help="trace the facade out of the shared noise plate instead "
-                         "of taking the authored boundaries at face value. The "
-                         "labels still come from the authored mask - only the "
-                         "boundaries move. Writes a SECOND, complete mask set "
-                         "into masks_noise/ and reference_noise/, so both exist "
-                         "side by side and nothing is overwritten")
+    ap.add_argument("--align", "--from-noise", action="store_true",
+                    dest="align",
+                    help="align the authored shapes to the shared noise plate, "
+                         "which draws its own windows, doors and columns. Every "
+                         "shape is TRANSLATED as one rigid piece - nothing is "
+                         "redrawn, nothing is deformed, and the black NOMAP area "
+                         "is not touched at all. Writes a SECOND, complete mask "
+                         "set into masks_aligned/ and reference_aligned/, so "
+                         "both exist side by side and nothing is overwritten")
     ap.add_argument("--frames", type=int, default=180,
-                    help="--from-noise: how many frames to average to find what "
+                    help="--align: how many frames to average to find what "
                          "stands still in the plate. More is steadier and slower")
     ap.add_argument("--hq", action="store_true",
-                    help="--from-noise: trace the high-quality masters in "
-                         "source_hq rather than the preview mp4s")
-    ap.add_argument("--reach", type=float, default=44.0,
-                    help="--from-noise: how far a boundary is allowed to move, "
-                         "in canvas px. The worst authored opening is 24 px out")
+                    help="--align: measure the high-quality masters in source_hq "
+                         "rather than the preview mp4s")
+    ap.add_argument("--search", type=float, default=28.0,
+                    help="--align: how far a shape may travel, in canvas px. "
+                         "The worst authored opening is 24 px out")
+    ap.add_argument("--prior", type=float, default=0.15,
+                    help="--align: how strongly to believe the authored position. "
+                         "The further a shape wants to move, the more it has to "
+                         "gain to justify it. 0 trusts the plate blindly, which "
+                         "sends shapes wandering wherever the score is flat")
+    ap.add_argument("--min-gain", type=float, default=2.0,
+                    help="--align: a shape has to improve by at least this many "
+                         "percent before it is moved at all")
     a = ap.parse_args()
 
-    if a.from_noise:
-        MASK_ROOT, REF_ROOT = mask_dirs("noise")
-        print("TRACING THE FACADE OUT OF THE NOISE PLATE")
+    if a.align:
+        MASK_ROOT, REF_ROOT = mask_dirs("aligned")
+        print("ALIGNING THE AUTHORED SHAPES TO THE NOISE PLATE")
         print("  masks     -> %s" % MASK_ROOT)
         print("  reference -> %s" % REF_ROOT)
-        print("  The authored set in masks/ is not touched.")
+        print("  Shapes are translated, never redrawn. The authored set in")
+        print("  masks/ is not touched, and NOMAP is not touched in either.")
         print()
 
     print("classifying mask ...")
@@ -641,13 +829,14 @@ def main():
     print("removing burned-in annotation text ...")
     lab = remove_text(lab, dmin)
 
-    if a.from_noise:
+    if a.align:
         print("\nfinding what stands still in the plate ...")
         os.makedirs(REF_ROOT, exist_ok=True)
         static = static_plate(a.frames, a.hq, os.path.join(
             REF_ROOT, "PxDL_SW_NOISE_STATIC_%dx%d.png" % (W, H)))
-        print("\ntracing ...")
-        lab = trace_from_noise(lab, static, reach=a.reach)
+        print("\naligning ...")
+        lab = register_to_plate(lab, static, search=a.search,
+                                prior=a.prior, min_gain=a.min_gain)
 
     print("\nmattes -> %s" % MASK_ROOT)
     for name, ids in GROUPS.items():

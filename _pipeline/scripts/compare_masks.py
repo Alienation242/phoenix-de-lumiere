@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-Which mask is right - the authored one, or the one traced from the noise?
+Which mask sits on the plate - the authored one, or the aligned one?
 
 The shared noise plate is not a flat field. The windows, doors and columns are
 drawn into it, each with a thin border. So there are two descriptions of the
 same facade, and they do not have to agree.
 
 This measures the disagreement on pixels instead of arguing about it. For every
-opening and column it finds the offset that best lines that region's outline up
-with the border the plate draws. A mask that is already right has its best
-offset at (0, 0); one that is out by 12 px says so.
+opening and column it finds the offset that best lines that region up with the
+border the plate draws. A mask that is already right has its best offset at
+(0, 0); one that is out by 12 px says so.
 
     python compare_masks.py                  both sets, table + overlay PNG
     python compare_masks.py --only layer     just the authored one
     python compare_masks.py --search 30      look further for the best offset
 
-It writes an overlay into reference_noise/ - the averaged plate in grey with the
-authored outline in RED and the traced one in GREEN, so the numbers can be
+It writes an overlay into reference_aligned/ - the averaged plate in grey with
+the authored outline in RED and the aligned one in GREEN, so the numbers can be
 looked at as well as read.
 
-Needs the averaged plate, which build_masks.py --from-noise leaves behind:
+Needs the averaged plate, which build_masks.py --align leaves behind:
 
-    python build_masks.py --from-noise
+    python build_masks.py --align
 """
 import argparse
 import json
@@ -32,7 +32,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import CFG, REF_ROOT, ffmpeg, mask_dirs  # noqa: E402
+from _common import CFG, MASK_VARIANTS, REF_ROOT, ffmpeg, mask_dirs  # noqa: E402
 
 W = CFG["canvas"]["w"]
 H = CFG["canvas"]["h"]
@@ -69,7 +69,7 @@ def outline(m):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--only", default="", choices=("", "layer", "noise"))
+    ap.add_argument("--only", default="", choices=("",) + tuple(MASK_VARIANTS))
     ap.add_argument("--search", type=int, default=28,
                     help="how far to look for a better offset, in px")
     ap.add_argument("--div", type=int, default=2, choices=(1, 2, 4),
@@ -79,11 +79,11 @@ def main():
     a = ap.parse_args()
 
     w, h = W // a.div, H // a.div
-    _, ref_noise = mask_dirs("noise")
-    static_path = os.path.join(ref_noise, "PxDL_SW_NOISE_STATIC_%dx%d.png" % (W, H))
+    _, ref_aligned = mask_dirs("aligned")
+    static_path = os.path.join(ref_aligned, "PxDL_SW_NOISE_STATIC_%dx%d.png" % (W, H))
     if not os.path.isfile(static_path):
         sys.exit("the averaged plate is not there yet:\n  %s\n"
-                 "Build it with:  python build_masks.py --from-noise" % static_path)
+                 "Build it with:  python build_masks.py --align" % static_path)
 
     static = decode(static_path, w, h).astype(np.float32)
     # How strongly the PLATE says "there is an edge here". Everything below is
@@ -91,16 +91,16 @@ def main():
     edginess = grad_mag(static)
     edginess = np.clip(edginess / max(np.percentile(edginess, 99.5), 1e-6), 0, 1)
 
-    wanted = [a.only] if a.only else ["layer", "noise"]
+    wanted = [a.only] if a.only else list(MASK_VARIANTS)
     sets = []
     for variant in wanted:
         mroot, _ = mask_dirs(variant)
         p = os.path.join(mroot, "PxDL_SW_MASK_09_OPENINGS_%dx%d.png" % (W, H))
         c = os.path.join(mroot, "PxDL_SW_MASK_05_COLUMN_%dx%d.png" % (W, H))
         if not os.path.isfile(p):
-            if variant == "noise":
-                print("the noise-traced set is not built - skipping it")
-                print("   build it with:  python build_masks.py --from-noise\n")
+            if variant == "aligned":
+                print("the aligned set is not built - skipping it")
+                print("   build it with:  python build_masks.py --align\n")
                 continue
             sys.exit("missing %s" % p)
         e = outline(decode(p, w, h) > 127) | outline(decode(c, w, h) > 127)
@@ -189,18 +189,18 @@ def main():
     lo, hi = np.percentile(static, 1), np.percentile(static, 99)
     st = np.clip((static - lo) / max(hi - lo, 1e-6) * 210, 0, 210).astype(np.uint8)
     rgb = np.dstack([st, st, st])
-    colours = {"layer": (255, 40, 40), "noise": (60, 255, 60)}
+    colours = {"layer": (255, 40, 40), "aligned": (60, 255, 60)}
     for variant, e in sets:
         rgb[e] = colours.get(variant, (255, 255, 0))
-    out = os.path.join(ref_noise, "PxDL_SW_MASK_COMPARE_%dx%d.png" % (w, h))
-    os.makedirs(ref_noise, exist_ok=True)
+    out = os.path.join(ref_aligned, "PxDL_SW_MASK_COMPARE_%dx%d.png" % (w, h))
+    os.makedirs(ref_aligned, exist_ok=True)
     subprocess.run([FF, "-hide_banner", "-loglevel", "error", "-f", "rawvideo",
                     "-pix_fmt", "rgb24", "-s", "%dx%d" % (w, h), "-i", "pipe:0",
                     "-frames:v", "1", "-y", out],
                    input=np.ascontiguousarray(rgb).tobytes(), check=True)
     print()
     print("overlay -> %s" % out)
-    print("           red = authored,  green = traced from the noise")
+    print("           red = authored,  green = aligned to the plate")
 
 
 if __name__ == "__main__":

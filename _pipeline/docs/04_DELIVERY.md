@@ -45,14 +45,14 @@ There are two descriptions of this facade, and they do not agree everywhere.
 
 | | what it is |
 |---|---|
-| `Layer` | **the default.** The authored colour-coded mask supplied with the project |
-| `Noise` | the same facade traced out of the shared noise plate, which draws its own windows, doors and columns |
+| `Layer` | **the default.** The authored colour-coded mask, exactly as drawn |
+| `Aligned` | the same shapes, each translated as one rigid piece onto the border the shared noise plate draws. Nothing redrawn, nothing deformed, black area untouched |
 
 ```powershell
-.\_pipeline\scripts\export_delivery.ps1 -Preset Proof -Masks Noise
+.\_pipeline\scripts\export_delivery.ps1 -Preset Proof -Masks Aligned
 ```
 
-Each goes to **its own folder** (`Deliver_MASK-LAYER` / `Deliver_MASK-NOISE`)
+Each goes to **its own folder** (`Deliver_MASK-LAYER` / `Deliver_MASK-ALIGNED`)
 and every file carries the tag in its name, so both can be rendered one after
 the other and nothing is overwritten or mixed up. Which one to send is an
 artistic call — **`docs/05_MASKS.md` has the measurements and the pictures.**

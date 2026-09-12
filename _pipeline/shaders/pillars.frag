@@ -41,6 +41,10 @@ uniform float uIntro;
 uniform float uSaturation;
 uniform float uLevels;
 uniform float uGrid;
+uniform float uTrimLift;      // 0 = cap and plinth are the same stone as the shaft
+uniform float uPlateMean;     // THIS frame's mean luma, straight from noise_arc.csv
+uniform float uPlateHP;       // 1 = keep the plate's grain, drop the wall's banding
+uniform float uPlateBlur;     // radius of "local", in canvas px
 uniform vec4  uCol0;          // x, y, w, h of column body 1, in canvas px
 uniform vec4  uCol1;
 uniform float uCanvasW;
@@ -98,10 +102,19 @@ void main() {
     float band = pow(max(dot(N, normalize(vec3(0.55 - camN * 0.8, 0.25, 0.8))), 0.0), 14.0);
     col += mix(uColor, vec3(1.0), 0.35) * band * 0.55;
 
-    // cap and plinth, distinguished gently. The old version multiplied by 1.30
-    // only where trim sits outside the body, which drew a hard horizontal seam
-    // straight across the pillar at the cap line.
-    col = mix(col, col * 1.12 + uStone * 0.05, trim * 0.6);
+    // Cap and plinth are the SAME STONE as the shaft, and by default nothing
+    // here distinguishes them.
+    //
+    // They used to be lifted, gently in the code - mix(col, col*1.12 + stone,
+    // 0.6) - and not at all gently on the wall. Measured on a rendered frame,
+    // that put the cap 41 % brighter than the shaft and the plinth 15 %
+    // brighter, and since the trim mattes sit at the TOP and BOTTOM of the
+    // pillar, the shaft in between read as a dark band lying across it. A
+    // painted-on shadow, and the second one of those to come off this shader.
+    //
+    // The cap and plinth are already wider than the shaft. That silhouette is
+    // what says "capital" - it does not need a brightness step as well.
+    if (uTrimLift > 0.0) col = mix(col, col * 1.12 + uStone * 0.05, trim * uTrimLift);
 
     // No contact darkening. It multiplied the silhouette down to 0.45 and drew
     // a hard dark stripe down both sides of every pillar - a painted-on shadow,
@@ -109,9 +122,33 @@ void main() {
     // cylinder shading above already turns the shaft away at its edges, which
     // is the part that was doing real work.
 
-    // the plate shades the pillars too, harder than before - it is the base
-    // for everything on this wall, the pillars included
+    // The plate shades the pillars too - it is the base for everything on this
+    // wall, the pillars included - but only its GRAIN, not its banding.
+    //
+    // The wall behind a pillar is not evenly lit: measured at one frame, the
+    // plate runs at 78-86 across the band the capital sits in, 47-58 down the
+    // shaft, and 58-69 again at the base. Multiplying the pillar by that
+    // printed the wall's own horizontal bands onto it, and what you saw was a
+    // dark shadow lying across the middle of the pillar with a bright cap and a
+    // bright plinth - the wall showing through a solid object.
+    //
+    // Same mistake as the chrome looking transparent, and the same fix: the
+    // pillar stands in the ROOM. So the plate is high-passed - its own local
+    // average subtracted and the frame's mean put back - which keeps every bit
+    // of the dither and takes the architecture's lighting off the object.
     float Lp = dot(texture(uPlate, vUv).rgb, vec3(0.2126, 0.7152, 0.0722));
+    if (uPlateHP > 0.0) {
+        vec2 r = vec2(1.0 / uCanvasW, uRes.x / (uCanvasW * uRes.y)) * uPlateBlur;
+        float acc = 0.0;
+        for (int j = -1; j <= 1; ++j) {
+            for (int i = -1; i <= 1; ++i) {
+                acc += dot(texture(uPlate, vUv + vec2(float(i), float(j)) * r).rgb,
+                           vec3(0.2126, 0.7152, 0.0722));
+            }
+        }
+        float local = acc / 9.0;
+        Lp = mix(Lp, clamp(uPlateMean + (Lp - local), 0.0, 1.0), uPlateHP);
+    }
     col *= mix(0.45, 1.30, Lp);
     col *= mix(0.30, 1.10, uArc) * uGain;
 

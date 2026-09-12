@@ -71,6 +71,31 @@ from every position.
 perspective to correct. It is left in deliberately: it costs nothing and starts
 working the moment anyone switches to a perspective camera.
 
+### The pillars take the plate's grain but not its banding.
+**Because** they stand in the *room*, in front of the wall — so the wall's own
+lighting must not print through them. It used to: measured on one frame, the
+plate runs at 78–86 across the band the capital sits in, 47–58 down the shaft
+and 58–69 again at the base, and multiplying the pillar by that put a bright cap
+and a bright plinth around a dark shaft. It read as a shadow lying across the
+middle of the pillar.
+**Practically:** the plate is high-passed for the pillars — its own local average
+subtracted, the frame's mean put back — which keeps every bit of the dither and
+drops the architecture's lighting. `--plate-hp 0` restores the old behaviour,
+`--plate-blur` sets what counts as local (110 canvas px: bigger than the dither,
+smaller than the bands). Measured after: the cap went from +40 % of the shaft to
++18 %, the plinth from +14 % to +2 %, grain unchanged (σ 5.68 → 5.79).
+**Same mistake as** the chrome looking transparent, which was `uRoomMix`
+sampling the plate per pixel and stamping the wall onto the metal.
+
+### The capital and plinth are the same stone as the shaft.
+**Because** they were lifted — `mix(col, col*1.12 + stone, 0.6)` — which reads as
+gentle in the code and measured 41 % brighter than the shaft at the cap. Since
+the trim mattes sit at the top *and* bottom of the pillar, that put a bright band
+at each end and left the shaft between them looking shadowed. The cap and plinth
+are already wider than the shaft; that silhouette is what says "capital", and it
+does not need a brightness step as well.
+**Changes if:** `--trim-lift` above 0 brings it back.
+
 ### Animation locks to 30-frame increments between 3:22 and 3:44.
 **Because** every cut the plate makes in that window lands on an exact whole
 second — a 1 Hz grid. After 3:51 it breaks the grid and strobes, so go free there.
