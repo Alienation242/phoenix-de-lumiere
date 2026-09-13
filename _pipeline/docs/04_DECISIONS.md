@@ -345,6 +345,40 @@ and the black area differs from the authored one by 0 px.
 **Changes if:** the plate is replaced. Re-run `build_masks.py --align --hq` and
 check the same numbers. Full account in `06_MASKS.md`.
 
+### A door is a door all the way to its edge.
+**Because** the authored mask wraps the left and right doors in a band of
+WINDOW - 28,382 px on door 25 and 32,803 px on door 27 - which the notes call
+the inside of the cut door frame. Taken at face value that band got the full
+glass treatment, and what showed on the wall was a stripe of interference
+colour running down the side of each of those two doors. The middle door has
+only a 6 px sliver of the same thing, which is why only two of the three ever
+showed it.
+**Decided from the opening's INDEX, not from the mattes.** The doors are the
+last openings in `openings.json`; the renderer passes the first door index to
+the shader, which then treats the whole of any door opening as door. The
+authored mask is still not edited on disk, and the renderer checks that windows
+and doors really are not interleaved before trusting the rule.
+**Verified:** with everything else identical, the change touches 4,965 px and
+**0 of them are outside a door opening** - 1,918 in door 25, 2,322 in door 27,
+725 in door 26.
+**Changes if:** `--door-frames glass` puts the band back to glass.
+
+### The opening ID map must not be filtered on the way IN either.
+**Because** `scale=flags=neighbor` in ffmpeg is not nearest-neighbour. Decoding
+the 27-opening ID map to 1/4 with it gives **84 distinct indices instead of 28**
+and invents openings numbered up to 106.
+**And the damage is not only the index.** The same image carries each opening's
+local UV in G and B, so the scaler was smoothing *that* as well - which moves
+the pane grid, the arch, the fanlight and the jamb reveals inside every
+opening. Measured at 1/4, correcting it changes **15.75 % of the frame**, with
+openings 6, 8, 12, 13 and 19 changing 63-96 % of their own pixels.
+**Only previews were ever affected.** At `--div 1` nothing is scaled, so every
+delivery render has always been correct. That is exactly why it survived this
+long.
+**Instead:** the canvas divides exactly by 1, 2 and 4, so `load_rgb(nearest)`
+decodes at full size and strides. That is a true point sample and provably
+exact - verified 28 distinct indices at all three scales.
+
 ### Only black is non-projection.
 **Because** the artist confirmed it. The other colours describe surface *type*,
 not whether to light them. `MASK_08_PROJECTABLE` is everything but the black, and

@@ -69,7 +69,8 @@ uniform float uPanes;         // master: 0 turns the whole grid off
 uniform float uPaneCols;      // panes across an opening
 uniform float uPaneRowsUp;    // rows in an upper window
 uniform float uPaneRowsLow;   // rows in a lower window
-uniform float uPaneSplit;     // opening index above which it is a LOWER window
+uniform float uPaneSplit;
+uniform float uDoorFirst;     // the first opening index that is a door, from openings.json     // opening index above which it is a LOWER window
 uniform float uBevel;         // bevel width, as a fraction of one pane
 uniform float uBevelDepth;    // how far the bevel tips the normal
 uniform float uMullion;       // bar width, as a fraction of one pane
@@ -305,6 +306,25 @@ void main() {
     float openIdx = floor(idTex.r * 255.0 + 0.5);
     vec2  openUV  = idTex.gb;
     float inOpen  = step(0.5, openIdx);
+
+    // A DOOR IS A DOOR ALL THE WAY TO ITS EDGE.
+    //
+    // The authored mask draws the left and right doors with a band of WINDOW
+    // wrapped around the leaf - 28,000 and 33,000 px of it - which the notes
+    // call the inside of the cut door frame. Taken at face value that band got
+    // the full glass treatment, and what you saw on the wall was a stripe of
+    // oil colours running down the side of each of those two doors. The middle
+    // door has only a 6 px sliver of it, which is why only two of the three
+    // ever showed it.
+    //
+    // Decided from the opening's own INDEX rather than from the mattes: the
+    // doors are the last openings in openings.json and the renderer passes the
+    // first of them in. So the whole of a door opening is door, whatever the
+    // colour mask says about parts of it, and the authored mask is still not
+    // edited on disk.
+    float isDoor = inOpen * step(uDoorFirst - 0.5, openIdx);
+    mDoor = max(mDoor, isDoor);
+    mWin  = min(mWin, 1.0 - isDoor);
 
     float camN = uCamX / max(uCamAmp, 1e-3);
 

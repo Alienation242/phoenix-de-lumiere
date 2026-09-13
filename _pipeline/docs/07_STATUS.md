@@ -342,6 +342,8 @@ is the list, and what each one found.
 | per-codec tolerance | a hardcoded 2.0 failed a perfectly good Draft; H.264 measures 2.55 |
 | flat-wall difference at both camera extremes | proved the shared noise is static — 0 px |
 | opening-ID clipping | objects flashing in neighbouring windows; 0 of 2829 px leak now |
+| opening-ID map at reduced scale | ffmpeg's `neighbor` scaler is not nearest: 84 indices where 28 exist, and the per-opening UV smoothed with them. Previews only; `--div 1` was always exact |
+| door frame containment | treating a door's whole opening as door changes 4,965 px, 0 of them outside a door |
 | pillar containment | the pillar shading fix changed 0 px outside the pillars |
 | shape-integrity check on the aligned masks | the first mask attempt deformed 25 of 29 shapes and ate 3 % of the black area |
 | frame-alignment search in `check_hq.py` | not yet triggered — it is there because a one-frame offset in the masters would put this wall out of step with eleven other surfaces while looking perfectly fine on its own |

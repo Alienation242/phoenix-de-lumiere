@@ -1199,9 +1199,38 @@ def load_gray(ff, path, w, h):
 
 
 def load_rgb(ff, path, w, h, nearest=True):
-    flags = "neighbor" if nearest else "area"
+    """An RGB reference image at the render size.
+
+    nearest=True means the values ARE the data - the opening ID map stores the
+    opening's index in R and its local UV in G and B - so they must survive the
+    downscale untouched.
+
+    ffmpeg's scale=flags=neighbor does NOT do that. Decoding the 27-opening ID
+    map to 1/4 with it yields EIGHTY-FOUR distinct indices instead of 28: the
+    scaler still goes through a conversion that rounds, and invents openings
+    that do not exist along every edge. Objects would then be clipped against a
+    window that is not there, and a pane row chosen by index comes out wrong on
+    the boundary.
+
+    Only ever visible on previews - at --div 1 nothing is scaled, which is why
+    it survived this long in the delivery path. The canvas divides exactly by
+    1, 2 and 4, so striding is a true point sample and provably exact.
+    """
+    if nearest:
+        raw = subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-i", path,
+                              "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
+                             capture_output=True).stdout
+        if len(raw) < CW * CH * 3:
+            sys.exit("could not read %s" % path)
+        full = np.frombuffer(raw[: CW * CH * 3], np.uint8).reshape(CH, CW, 3)
+        if (w, h) == (CW, CH):
+            return full
+        if CW % w or CH % h:
+            sys.exit("%s cannot be point-sampled to %dx%d" % (path, w, h))
+        return np.ascontiguousarray(full[:: CH // h, :: CW // w])
+
     raw = subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-i", path,
-                          "-vf", "scale=%d:%d:flags=%s" % (w, h, flags),
+                          "-vf", "scale=%d:%d:flags=area" % (w, h),
                           "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
                          capture_output=True).stdout
     if len(raw) < w * h * 3:
@@ -1530,6 +1559,13 @@ def main():
                          "cap 41%% brighter than the shaft and the plinth 15%% - "
                          "so the shaft read as a dark band lying across the "
                          "pillar between them")
+    ap.add_argument("--door-frames", default="door", choices=("door", "glass"),
+                    help="what to do with the band of WINDOW the authored mask "
+                         "wraps around the left and right doors. 'door' treats "
+                         "a door's whole opening as door, which is what it is; "
+                         "'glass' takes the mask at face value and lets that "
+                         "band carry the oil, which puts a stripe of "
+                         "interference colour down the side of those two doors")
     ap.add_argument("--pillar-noise", type=float, default=0.25,
                     help="how much of the plate's grain lands on the pillars. "
                          "1 is every bit of it, 0 is none - the pillar still "
@@ -1744,6 +1780,7 @@ def main():
     oid = load_rgb(ff, os.path.join(REF_ROOT, "PxDL_SW_OPENING_ID_%dx%d.png" % (CW, CH)), W, H)
     t_oid = ctx.texture((W, H), 3, oid.tobytes())
     t_oid.filter = (moderngl.NEAREST, moderngl.NEAREST)       # it is an index, never filter it
+    # ... and it must not have been filtered on the way in either - see load_rgb.
 
     t_plate = ctx.texture((W, H), 3, dtype="f1")
     t_plate.filter = (moderngl.LINEAR, moderngl.LINEAR)
@@ -1826,6 +1863,21 @@ def main():
 
     openings = json.load(open(os.path.join(REF_ROOT, "openings.json")))["openings"]
     doors = [o for o in openings if o["kind"] == "DOOR"]
+
+    # The first opening index that is a door. The shader uses it to treat a
+    # door's WHOLE opening as door - see the note in sky_oil.frag - which only
+    # works if the doors really are the last openings. They are, because boxes()
+    # sorts by row and the doors are the bottom row, but assuming it silently
+    # would be the kind of thing that breaks when a mask is rebuilt.
+    door_first = min([o["index"] for o in doors]) if doors else 9999
+    if a.door_frames == "glass":
+        door_first = 9999          # leave the authored WINDOW bands as glass
+    stray = [o["index"] for o in openings
+             if (o["index"] >= door_first) != (o["kind"] == "DOOR")]
+    if stray:
+        print("openings  ! windows and doors are interleaved at %s - the door "
+              "frames will keep the glass treatment" % stray)
+        door_first = 9999
     target = pick_target_door(doors)
     seg_lo = (seg["in"] - seg["handles"] - seg["in"]) / float(FPS)
     # Everything must have LANDED before the dissolve begins.
@@ -2182,6 +2234,7 @@ def main():
         setu(bg_prog, "uPaneRowsUp", a.pane_rows_upper)
         setu(bg_prog, "uPaneRowsLow", a.pane_rows_lower)
         setu(bg_prog, "uPaneSplit", a.pane_split)
+        setu(bg_prog, "uDoorFirst", float(door_first))
         setu(bg_prog, "uBevel", a.bevel)
         setu(bg_prog, "uBevelDepth", a.bevel_depth)
         setu(bg_prog, "uMullion", a.mullion)
