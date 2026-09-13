@@ -77,6 +77,11 @@
         justify-content:center;position:relative}
   .shot img{display:block;max-width:100%;image-rendering:auto}
   .shot img.detail{image-rendering:pixelated;max-width:none}
+  .shot video{display:block;max-width:100%;background:#000}
+  /* !important on purpose: .shot img and .shot video are each a class
+     plus an element, which outranks a bare .hide and left the empty
+     player sitting on the page before any clip existed. */
+  .hide{display:none !important}
   .busy{position:absolute;top:8px;left:10px;background:#000a;padding:3px 8px;
         border-radius:4px;color:var(--accent);font-size:11px;display:none}
   .busy.on{display:block}
@@ -130,6 +135,13 @@
       <label class="ck"><input type="checkbox" id="live" checked> re-render as I let go</label>
       <label class="ck"><input type="checkbox" id="detail"> 1:1 detail</label>
       <button class="go" id="render">Render now</button>
+      <button id="play" disabled title="render a few seconds from here and watch them move">Play ▶</button>
+      <select id="secs" title="how much to render">
+        <option value="2">2 s</option>
+        <option value="4" selected>4 s</option>
+        <option value="8">8 s</option>
+      </select>
+      <button id="still" class="hide">Back to the frame</button>
       <span class="note" id="timing"></span>
     </div>
 
@@ -141,6 +153,7 @@
 
     <div class="shot">
       <img id="img" alt="">
+      <video id="vid" class="hide" controls loop playsinline></video>
       <div class="busy" id="busy">rendering…</div>
       <div class="err" id="err"></div>
     </div>
@@ -152,6 +165,9 @@
       <span class="note" id="copied"></span>
     </div>
     <div class="note">
+      <b>Play</b> renders forward from the frame you are on and plays it here.
+      Some of this look only exists in motion — the ripples grow, the sun
+      moves, the normals breathe — and none of that is visible in a still.
       Judge it at more than one moment: the plate is near-black at 2:40 and
       strobing at 3:51, and a look that only works at one of them is not
       finished. You must still see the plate's own dither through the sky —
@@ -545,7 +561,7 @@ function payload(){
 }
 
 /* One render at a time. A slider dragged across its range would otherwise
-   queue a dozen three-second renders and the last one you see would not be
+   queue up a dozen renders and the last one you see would not be
    the one you stopped on. */
 function queue(){
   if (!$('live').checked) return;
@@ -571,7 +587,7 @@ function render(){
                     body: JSON.stringify(body)})
     .then(function(r){ return r.json(); })
     .then(function(d){
-      $('timing').textContent = ((performance.now() - t0)/1000).toFixed(1) + ' s a frame';
+      showSpent(performance.now() - t0, d.spent || {});
       if (!d.ok){
         $('err').textContent = d.error || 'the render failed';
         $('err').classList.add('on');
@@ -581,6 +597,8 @@ function render(){
       img.src = 'data:image/png;base64,' + d.png;
       img.classList.toggle('detail', $('detail').checked);
       $('flags').value = d.flags || '(everything is at its default)';
+      showStill();
+      $('play').disabled = false;
     })
     .catch(function(e){
       $('err').textContent = String(e);
@@ -590,6 +608,93 @@ function render(){
       inFlight = false;
       $('busy').classList.remove('on');
       if (dirty) render();
+    });
+}
+
+/* Where the time went. Worth showing: the three numbers behave completely
+   differently - the draw is a couple of milliseconds, the png is a fixed cost,
+   and the plate is either nothing or most of a second depending on whether the
+   frame had been read ahead. Seeing which one is big tells you whether to wait
+   or to stop moving the playhead. */
+function showSpent(wall, sp){
+  var ms = Math.round(wall);
+  if (sp.oneshot){
+    $('timing').textContent = ms + ' ms — one-shot render (the warm one is down)';
+    return;
+  }
+  if (sp.plate_ms === undefined){ $('timing').textContent = ms + ' ms'; return; }
+  $('timing').textContent = ms + ' ms  =  plate ' + sp.plate_ms
+    + (sp.cached ? ' (ready)' : ' (seek)')
+    + ' + draw ' + sp.gl_ms + ' + png ' + sp.ms;
+}
+
+/* ---- watching it move --------------------------------------------------
+   A still cannot show a ripple growing, the sun crossing, or the normals
+   breathing, and those are the settings that are hardest to judge. Play sends
+   a run of frames through the same warm renderer and plays the result here. */
+function showStill(){
+  var v = $('vid');
+  v.pause();
+  v.classList.add('hide');
+  $('img').classList.remove('hide');
+  $('still').classList.add('hide');
+}
+
+function showClip(url){
+  var v = $('vid');
+  $('img').classList.add('hide');
+  v.classList.remove('hide');
+  $('still').classList.remove('hide');
+  v.src = url;
+  v.play().catch(function(){});   /* a browser that will not autoplay is fine:
+                                     the controls are right there */
+}
+
+function playClip(){
+  if (inFlight) return;
+  inFlight = true;
+  var secs = Number($('secs').value) || 4;
+  $('play').disabled = true;
+  $('render').disabled = true;
+  $('busy').textContent = 'rendering ' + secs + ' s…';
+  $('busy').classList.add('on');
+  $('err').classList.remove('on');
+  var t0 = performance.now();
+  var body = {
+    params: payload(),
+    tracks: T,
+    frame: frameNow(),
+    seconds: secs,
+    div: Number($('div').value),
+    /* never the 1:1 crop: a clip is for judging movement, and a slice of the
+       middle of the wall is the wrong thing to watch move */
+    width: Math.max(360, Math.min(1600,
+      Math.round($('img').parentNode.clientWidth)))
+  };
+  fetch('/clip', {method:'POST', headers:{'Content-Type':'application/json'},
+                  body: JSON.stringify(body)})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      var took = (performance.now() - t0) / 1000;
+      if (!d.ok){
+        $('err').textContent = d.error || 'the clip failed';
+        $('err').classList.add('on');
+        return;
+      }
+      $('timing').textContent = d.frames + ' frames in ' + took.toFixed(1)
+        + ' s — ' + (d.frames / took).toFixed(1) + ' fps, ' + d.mb + ' MB';
+      showClip(d.url);
+    })
+    .catch(function(e){
+      $('err').textContent = String(e);
+      $('err').classList.add('on');
+    })
+    .finally(function(){
+      inFlight = false;
+      $('play').disabled = false;
+      $('render').disabled = false;
+      $('busy').textContent = 'rendering…';
+      $('busy').classList.remove('on');
     });
 }
 
@@ -670,6 +775,8 @@ fetch('/state').then(function(r){ return r.json(); }).then(function(d){
   $('render').onclick = render;
   $('div').onchange = render;
   $('detail').onchange = render;
+  $('play').onclick = playClip;
+  $('still').onclick = showStill;
 
   $('reset').onclick = function(){
     T = {};

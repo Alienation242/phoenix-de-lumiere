@@ -4,7 +4,8 @@ REM  PHOENIX DE LUMIERE  -  SW WALL  -  THE LOOK
 REM
 REM  Double-click this. A page opens in your browser with sliders for colour,
 REM  contrast, the noise plate, the oil and the dither. Move one and the wall
-REM  re-renders - about three seconds for a real frame at quarter size.
+REM  re-renders - a real frame, a few seconds for the first one and about a
+REM  quarter of a second for every one after it.
 REM
 REM  It is the REAL renderer behind those sliders, so what you see is what the
 REM  delivery makes.

@@ -246,7 +246,7 @@ slider must not change what the delivery would render until Save is pressed.
 
 ### The easing maths is written twice, in python and in javascript.
 **Because** the page has to draw the curve and show what a slider reads at the
-playhead without a three-second round trip for every pixel. The copies must stay
+playhead without a round trip to the renderer for every pixel. The copies must stay
 identical, and there is a comment in each saying so. The risk is contained: the
 PICTURE always comes back from the real renderer, so a disagreement could only
 ever mislead about the delivery, never change it.
@@ -264,9 +264,110 @@ controls nothing.
 with it — and the render PC cannot `pip install` anything, its DNS being broken.
 A browser is on every Windows machine and needs no packages. The server binds to
 `127.0.0.1`, so nothing off the machine can reach it, and it needs no internet.
-**Consequence:** previews cost a process start each, about 3 s a frame at ÷4
-rather than a live 30 fps view. Worth it against rendering 30-second mp4s to
-judge a slider, which is what this replaced.
+
+### The tuner keeps ONE renderer alive instead of starting one per frame.
+**Because** the cost was never the frame. Measured: a one-frame run took 6.67 s
+wall, of which the render loop was 1.0 s and a single frame 0.03 s. The other
+5.7 s was the GL context, the shader compile, 31 mattes and the opening maps —
+paid again for every slider move. Keeping the process up and feeding it one JSON
+line per request (`render_shader.py --serve`) moves that cost to the first frame
+only.
+
+Measured through the page, ÷4 at 1100 px:
+
+| | before | after |
+|---|---|---|
+| first frame | 6.7 s | 7.0 s |
+| every frame after | 6.7 s | **0.14 – 0.28 s** |
+| a 4-second clip | (not possible) | 3.6 s, **33 fps** |
+
+**The picture did not change**, which is the part that mattered. The GPU is not
+bit-deterministic across processes, so the test was not equality but whether the
+two paths differ by less than two runs of the *same* code differ. At frame 5701,
+÷4, 1100 px: same code twice, 86 px of 947100 differ; warm against one-shot,
+78 px. Below the noise floor. The 1:1 crop, 26 px.
+
+**Consequence:** a scale change restarts the renderer, costing those seconds
+once. One is kept rather than one per scale — a second would mean a second GL
+context and a second copy of every texture, and changing scale is rare.
+**And:** the old one-shot path is still there as `render_oneshot()` and is used
+if the warm one ever dies. A tuner that is fast but can break is worse than one
+that is slow. Tested by killing the renderer mid-session: the page got its frame.
+
+### The plate is read AHEAD of the playhead, in a thread.
+
+**Because** once the renderer stayed up, the frame stopped being the cost and
+the noise plate became it. Measured, div 4, off the two 760 MB sources:
+
+| | |
+|---|---|
+| spawn ffmpeg | 54 ms |
+| open both files and seek | **700–1000 ms** |
+| every frame after that seek | 20 ms |
+| the GL draw itself | **0–7 ms** |
+
+A still was never slow because of the picture — it threw the decoder away and
+seeked again for every frame asked for. It is also exactly why a CLIP was
+quick: one seek, amortised over 120 frames.
+
+So one decoder is kept open and walked forward in a thread, filling a cache
+around wherever the page is looking. A gap of under forty frames is walked to
+rather than seeked to, because forty frames of walking is cheaper than one
+seek. Through the page, div 4:
+
+| | before | after |
+|---|---|---|
+| slider moved, same frame | 200–280 ms | **185–265 ms** |
+| 1:1 detail | ~170 ms | **130 ms** |
+| scrub to the next frame | 1600 ms | **~150 ms** |
+| jump to a bookmark | 1200–1600 ms | **~200 ms** |
+| first frame of a session | 1.2 s | 1.2 s (the one seek nobody can avoid) |
+
+**Consequence:** the bookmarks are fetched and *pinned*, exempt from the
+trimming, because a bookmark is by definition far from where you are looking
+and trimming by distance threw every one of them away the moment it arrived.
+**And:** they are only fetched while the page is quiet for two seconds. Doing
+them eagerly turned 140 ms of scrubbing into 715, because a seek cannot be
+interrupted and the next thing asked for queued behind it.
+**And:** the reader does nothing at all until the first frame is requested.
+Guessing meant pre-filling from the top of the segment and making the page's
+own first frame wait behind a seek it never wanted — 1.0 s became 2.3 s.
+
+### The preview PNG is written here, not by ffmpeg.
+**Because** after the plate was fixed, the PNG was the whole remaining cost:
+about 170 ms, of which 54 was a process that existed only to compress an image
+Python can compress itself.
+
+- A **crop** needs no resampling, so there is nothing ffmpeg could do
+  differently. Done in numpy: 170 ms becomes 30.
+- A **fit** still goes through ffmpeg's lanczos — a different kernel would
+  quietly change the thing being judged — but ffmpeg hands back raw pixels now
+  and the PNG is written here. Verified bit-identical: 0 of 947100 values
+  differ.
+
+zlib level 0, chosen on a REAL frame rather than on noise, which is the one
+case where it does not matter and therefore the wrong thing to benchmark on:
+level 0 is 2 ms and 925 kB, level 1 is 24 ms and 623 kB. The file crosses a
+loopback socket and is then thrown away, so 22 ms to save 300 kB that never
+touches a network is the wrong trade.
+
+**The trap:** ffmpeg's crop evaluates `(iw-cw)/2` as a double and `lrint`s it,
+so 2447−760 = 1687 halves to 843.5 and lands on **844**. Flooring it in numpy
+put the 1:1 view one pixel left of where it has always been — invisible in a
+screenshot, and exactly what matters when the dither is the thing being judged.
+Caught by diffing against the old path: 59 % of pixels differed, and at a shift
+of one pixel they were bit-identical.
+
+### Play renders a clip through the same warm renderer, not a separate export.
+**Because** half of this look does not exist in a still. Ripples grow, the sun
+crosses, the normals breathe — and those are exactly the settings that are
+hardest to judge from one frame. The frames go into ONE encoder for the whole
+run, so the per-frame cost is the render and nothing else: 120 frames in 3.6 s.
+The clip is served with `Accept-Ranges`, because a `<video>` will play a plain
+200 response but cannot seek in one, and being able to drag back to the moment
+you were judging is most of the point of watching it move.
+**Consequence:** a clip never uses the 1:1 crop. A slice of the middle of the
+wall is the wrong thing to watch move.
 
 ---
 

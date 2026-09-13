@@ -88,8 +88,18 @@ Nothing in the pipeline needs a licensed application.
 
 **Double-click `TUNE.cmd`.** A page opens in your browser with sliders for
 colour, contrast, the noise plate, the oil and the dither. Move one and the wall
-re-renders — a real frame through `render_shader.py`, about three seconds at
-quarter size, so what you see is what the delivery makes.
+re-renders — a real frame through `render_shader.py`, so what you see is what
+the delivery makes. The first frame of a session takes a few seconds — the
+renderer starts, and the noise plate has to be seeked into once — and after
+that it stays up and frames land in about a fifth of a second. The plate is
+read ahead of the playhead in the background, so scrubbing forward and the
+bookmark buttons cost nothing once they have warmed up.
+
+The line next to **Render now** says where the time went: `plate` is the noise
+plate (0 when it was read ahead, most of a second when it had to seek),
+`draw` is the wall itself — single-figure milliseconds — and `png` is getting
+the picture into the browser. If a render feels slow, that line says which of
+the three to blame.
 
 - **Save** writes `_pipeline/look.json`. `render_shader.py` loads that as its
   *defaults*, so **`EXPORT.cmd` renders your look** with nothing else to
@@ -104,6 +114,10 @@ quarter size, so what you see is what the delivery makes.
   of being one setting for all of it.
 - **1:1 detail** shows an unscaled slice. Fitting 2447 px into a browser hides
   exactly the dither and banding these sliders exist to judge.
+- **Play ▶** renders a few seconds forward from the frame you are on and plays
+  them in the page, at around 30 frames a second. Some of this look only exists
+  in motion — the ripples grow, the sun crosses, the normals breathe — and a
+  still cannot show you any of it. *Back to the frame* returns to the sliders.
 - The bookmark buttons jump to the moments that matter — near-black at 2:40,
   strobing at 3:51. A look that only works at one of them is not finished.
 

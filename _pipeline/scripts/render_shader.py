@@ -31,13 +31,17 @@ motion IS depth.
 Needs: moderngl, numpy, ffmpeg.   python -m pip install moderngl
 """
 import argparse
+import collections
 import csv
 import json
 import math
 import os
 import re
 import subprocess
+import struct
+import zlib
 import sys
+import threading
 import time
 
 import numpy as np
@@ -1297,6 +1301,13 @@ def main():
                          "the frame count, held down by VBV so it cannot run "
                          "away on a busy passage. Use it when there is a hard "
                          "ceiling - an upload limit, a message attachment")
+    ap.add_argument("--serve", action="store_true",
+                    help="stay alive and render frames on demand. Reads "
+                         "one JSON command per line on stdin and answers "
+                         "with one JSON line. This exists because startup "
+                         "is 5.7 s and the frame itself is 0.03 s, so a "
+                         "tuner that spawns a renderer per slider move "
+                         "pays the 5.7 s every single time")
     ap.add_argument("--log", default="",
                     help="also write everything printed here to this file. The "
                          "live progress bar is left out of it")
@@ -1972,13 +1983,33 @@ def main():
                       "-threads", str(a.threads),
                       "-ss", ss, "-i", v1, "-ss", ss, "-i", v2,
                       "-filter_complex", fc])
-    noise = popen_polite(
-        noise_cmd + ["-frames:v", str(a.count),
-                     "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
-        stdout=subprocess.PIPE, bufsize=W * H * 3 * 2)
+    def open_noise(start, count, quiet=False):
+        """The plate, from `start`, for `count` frames.
+
+        Serve mode re-seeks for every still it is asked for, so the -ss has
+        to be rebuilt per call rather than baked in once at startup.
+        """
+        cmd = list(noise_cmd)
+        secs = "%.6f" % (start / float(FPS))
+        for i, tok in enumerate(cmd):
+            if tok == "-ss":
+                cmd[i + 1] = secs
+        kw = {"stdout": subprocess.PIPE, "bufsize": W * H * 3 * 2}
+        if quiet:
+            # The read-ahead thread drops its pipe whenever the page
+            # jumps somewhere else, and ffmpeg says so every time. It is
+            # not news, and it would land in the middle of the console.
+            kw["stderr"] = subprocess.DEVNULL
+        return popen_polite(
+            cmd + ["-frames:v", str(count),
+                   "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"], **kw)
+
+    noise = None if a.serve else open_noise(a.start, a.count)
 
     # ---- output sink ------------------------------------------------------
-    layout = a.layout
+    # Serve mode writes each frame where it is told to, one request at a
+    # time, so none of the delivery sinks apply.
+    layout = "none" if a.serve else a.layout
     if a.plates and layout == "none":
         layout = "plates"
 
@@ -2110,7 +2141,7 @@ def main():
     # sinks is what decides this now, not the old --plates flag: with
     # --layout the delivery sinks exist while a.plates is still False, and this
     # went looking for sink_args that were never built.
-    if not sinks:
+    if not sinks and not a.serve:
         sink = popen_polite(
             [ff, "-hide_banner", "-loglevel", "error", "-y", "-threads", str(a.threads),
              "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (W, H),
@@ -2153,14 +2184,484 @@ def main():
     # plausible enough to miss.
     proj = ortho(0, W, 0, H, -Z_CLIP, Z_CLIP)
 
-    for k in range(a.count):
-        buf = noise.stdout.read(nbytes)
-        if len(buf) < nbytes:
-            print("\nnoise stream ended early at frame %d" % k)
-            break
-        t_plate.write(buf)
+    # ---- where frames come from -------------------------------------------
+    # Normally: straight down the plate stream, in order, exactly as before.
+    # Serving: whatever the next command on stdin asks for. Either way the body
+    # below is the same code rendering the same frame, which is the point - a
+    # preview that renders differently from the delivery is worth nothing.
+    req = {}
 
-        frame = a.start + k
+    def say(obj):
+        # Straight to the real stdout: the tuner parses this channel, and
+        # a Tee installed by --log would put the log header in the middle
+        # of it.
+        sys.__stdout__.write(json.dumps(obj) + "\n")
+        sys.__stdout__.flush()
+
+    def apply_look_file(path):
+        """Swap in a different look without restarting. Returns an error or None."""
+        if not path:
+            return None
+        look2, tracks2, err = load_look(path)
+        if err:
+            return err
+        fields = {act.dest for act in ap._actions}
+        for key, val in look2.items():
+            if key in fields:
+                setattr(a, key, val)
+        tracks.clear()
+        tracks.update({k: v for k, v in tracks2.items() if k in fields})
+        return None
+
+    def sequential_feed():
+        for k in range(a.count):
+            buf = noise.stdout.read(nbytes)
+            if len(buf) < nbytes:
+                print("\nnoise stream ended early at frame %d" % k)
+                return
+            yield k, a.start + k, buf
+
+    # ---- the plate, read ahead of the playhead -----------------------------
+    # Measured, div 4, off the two 760 MB source mp4s:
+    #
+    #     spawn ffmpeg                     54 ms
+    #     open both files and seek    700-1000 ms     <- this was the whole cost
+    #     every frame after the seek       20 ms
+    #     the GL draw itself                0-7 ms
+    #
+    # So a still was never slow because of the picture. It was slow because it
+    # threw the decoder away and seeked again for every frame asked for, which
+    # is also exactly why a CLIP is quick: one seek, amortised over 120 frames.
+    #
+    # This keeps ONE decoder open and running forward in a thread, filling a
+    # cache ahead of wherever the page is looking. Scrubbing forward then costs
+    # nothing at all, and only a jump somewhere else pays for a seek.
+    lo_f = seg["in"] - seg["handles"]
+    hi_f = seg["out"] + seg["handles"]
+    # Reading forward is ~20 ms a frame and a seek is ~800 ms, so anything
+    # within about forty frames is cheaper to read than to seek to.
+    SEEK_IF_AHEAD = 40
+    cache_mb = float(os.environ.get("PXDL_PLATE_CACHE_MB", "400"))
+    keep = max(4, int(cache_mb * 1048576 // max(nbytes, 1)))
+    # Pinned frames are never trimmed, so they need a bound of their own. A
+    # frame is 4.5 MB at div 4 but 75 MB at div 1, and the same handful of
+    # bookmarks would be 27 MB in one case and 450 in the other.
+    pin_max = max(1, int(200 * 1048576 // max(nbytes, 1)))
+
+    # `cache` is the rolling window around the playhead and gets trimmed.
+    # `pinned` is the handful of bookmark frames, and never does: a bookmark is
+    # by definition a long way from wherever you are looking now, so trimming by
+    # distance threw every one of them away the moment it arrived.
+    plate = {"cache": {}, "pinned": {}, "want": None, "focus": lo_f,
+             "marks": [], "bad": set(), "pos": None, "err": None,
+             "stop": False, "paused": False, "seeks": 0, "decoded": 0,
+             "busy_at": time.time(), "asked": False}
+    # A bookmark seek takes about a second and cannot be interrupted, so
+    # starting one while the page is being worked on makes the NEXT thing
+    # asked for wait behind it. Measured: doing them eagerly turned 140 ms
+    # of scrubbing into 715. They are worth having, but only in the gaps.
+    IDLE_BEFORE_MARKS = 2.0
+    plate_cond = threading.Condition(threading.Lock())
+
+    def plate_trim():
+        """Drop whatever is furthest from where the page is looking."""
+        c, focus = plate["cache"], plate["focus"]
+        if len(c) <= keep:
+            return
+        for f in sorted(c, key=lambda k: -abs(k - focus))[:len(c) - keep]:
+            del c[f]
+
+    def plate_have(f):
+        return f in plate["cache"] or f in plate["pinned"]
+
+    def plate_buf(f):
+        return plate["cache"][f] if f in plate["cache"] else plate["pinned"][f]
+
+    def plate_reader():
+        pipe, pos = None, None
+
+        def shut():
+            if pipe is None:
+                return
+            try:
+                pipe.stdout.close()
+                pipe.wait(timeout=5)
+            except Exception:
+                pipe.kill()
+
+        try:
+            while True:
+                with plate_cond:
+                    if plate["stop"]:
+                        break
+                    if plate["paused"]:
+                        plate_cond.wait(0.1)
+                        continue
+                    want, focus = plate["want"], plate["focus"]
+                    target, pin = None, False
+
+                    if want is not None and not plate_have(want):
+                        target = want              # somebody is waiting on it
+                    elif (plate["marks"] and time.time() - plate["busy_at"]
+                          > IDLE_BEFORE_MARKS):
+                        # The bookmarks are the only jumps this page makes,
+                        # and warming them is what turns a jump from 1.2 s
+                        # into nothing. Done only while the page is quiet.
+                        m = plate["marks"].pop(0)
+                        if plate_have(m) or m in plate["bad"]:
+                            continue
+                        target, pin = m, True
+                    elif not plate["asked"]:
+                        # Nothing has been asked for yet, so there is no
+                        # playhead to read ahead of. Guessing meant starting
+                        # at the top of the segment and making the page's
+                        # first frame queue behind a seek it never wanted.
+                        plate_cond.wait(0.2)
+                        continue
+                    else:
+                        # Fill forward from the playhead. Starting the search at
+                        # `focus` rather than at `pos` is what brings the reader
+                        # back after a bookmark has taken it somewhere else.
+                        nxt, f = None, max(lo_f, focus)
+                        limit = min(hi_f, focus + keep - 1)
+                        while f <= limit:
+                            if not plate_have(f) and f not in plate["bad"]:
+                                nxt = f
+                                break
+                            f += 1
+                        if nxt is None or len(plate["cache"]) >= keep:
+                            plate_cond.wait(0.2)
+                            continue
+                        target = nxt
+
+                    # Reading forward is ~20 ms a frame and a seek is ~800, so
+                    # anything close ahead is cheaper to walk to than to seek to
+                    # - and the frames walked past land in the cache anyway.
+                    if (pipe is not None and pos is not None and pos <= target
+                            and target - pos <= SEEK_IF_AHEAD):
+                        seek, target = False, pos
+                    else:
+                        seek = True
+
+                # the expensive part, deliberately outside the lock so that a
+                # request can still be answered from the cache meanwhile
+                if seek:
+                    shut()
+                    pipe, pos = None, None
+                    if not (lo_f <= target <= hi_f):
+                        with plate_cond:
+                            plate["bad"].add(target)
+                            plate_cond.notify_all()
+                        continue
+                    pipe = open_noise(target, hi_f - target + 1, quiet=True)
+                    pos = target
+                    with plate_cond:
+                        plate["seeks"] += 1
+                buf = pipe.stdout.read(nbytes)
+                if len(buf) < nbytes:
+                    shut()
+                    with plate_cond:
+                        plate["bad"].add(pos)
+                        plate["pos"] = None
+                        plate_cond.notify_all()
+                    pipe, pos = None, None
+                    continue
+                with plate_cond:
+                    if pin and pos == target and len(plate["pinned"]) < pin_max:
+                        plate["pinned"][pos] = buf
+                    else:
+                        plate["cache"][pos] = buf
+                        plate_trim()
+                    plate["decoded"] += 1
+                    pos += 1
+                    plate["pos"] = pos
+                    plate_cond.notify_all()
+        except Exception as e:                # a reader that dies must say so
+            with plate_cond:
+                plate["err"] = str(e)
+                plate["bad"].add(-1)
+                plate_cond.notify_all()
+        finally:
+            shut()
+
+    def plate_get(frame, timeout=120.0):
+        """The frame, waiting for the reader only if it is not already here."""
+        end = time.time() + timeout
+        with plate_cond:
+            plate["focus"] = frame
+            plate["busy_at"] = time.time()
+            plate["asked"] = True
+            if plate_have(frame):
+                return plate_buf(frame)
+            plate["want"] = frame
+            plate["bad"].discard(frame)
+            plate_cond.notify_all()
+            while not plate_have(frame):
+                if frame in plate["bad"] or -1 in plate["bad"]:
+                    plate["want"] = None
+                    return None
+                if time.time() > end:
+                    plate["want"] = None
+                    return None
+                plate_cond.wait(0.2)
+            plate["want"] = None
+            plate["busy_at"] = time.time()
+            return plate_buf(frame)
+
+    def plate_pause(on):
+        """A clip reads the plate itself, sequentially. Two decoders racing for
+        the same two mp4s is slower than either one alone."""
+        with plate_cond:
+            plate["paused"] = on
+            plate_cond.notify_all()
+
+    reader_thread = threading.Thread(target=plate_reader, daemon=True)
+
+    def serve_feed():
+        """One frame per command, and a run of them for a clip."""
+        reader_thread.start()
+        say({"ready": 1, "w": W, "h": H, "div": a.div,
+             "start": lo_f, "end": hi_f, "cache": keep})
+        while True:
+            line = sys.stdin.readline()
+            if not line:
+                return
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                cmd = json.loads(line)
+            except ValueError as e:
+                say({"error": "bad command: %s" % e})
+                continue
+            if cmd.get("quit"):
+                return
+
+            err = apply_look_file(cmd.get("look"))
+            if err:
+                say({"error": "look: %s" % err})
+                continue
+
+            clip = cmd.get("clip")
+            if clip:
+                start = int(clip.get("start", a.start))
+                count = max(1, int(clip.get("count", 60)))
+                req.clear()
+                req.update(cmd)
+                req["clip_open"] = True
+                clip_t[0] = time.time()
+                plate_pause(True)
+                pipe = open_noise(start, count)
+                try:
+                    for i in range(count):
+                        buf = pipe.stdout.read(nbytes)
+                        if len(buf) < nbytes:
+                            break
+                        req["last"] = (i == count - 1)
+                        yield i, start + i, buf
+                finally:
+                    try:
+                        pipe.stdout.close()
+                        pipe.wait(timeout=5)
+                    except Exception:
+                        pipe.kill()
+                    plate_pause(False)
+                continue
+
+            # The page can ask for the frames it is about to want - the
+            # bookmark buttons, say - and the reader picks them up whenever it
+            # has nothing more urgent to do.
+            marks = cmd.get("warm")
+            if marks:
+                with plate_cond:
+                    plate["marks"] = [int(m) for m in marks
+                                      if not plate_have(int(m))][:24]
+                    plate_cond.notify_all()
+                if not cmd.get("frame"):
+                    say({"warming": len(plate["marks"])})
+                    continue
+
+            want = int(cmd.get("frame", a.start))
+            t_seek = time.time()
+            with plate_cond:
+                hit = plate_have(want)
+            buf = plate_get(want)
+            if buf is None:
+                say({"error": "the plate has no frame %d" % want})
+                continue
+            req.clear()
+            req.update(cmd)
+            req["plate_ms"] = int((time.time() - t_seek) * 1000)
+            req["plate_hit"] = hit
+            yield 0, want, buf
+
+    # ---- answering a serve request ----------------------------------------
+    # The still goes out as a PNG through ffmpeg so the crop and the lanczos
+    # scale are byte-for-byte what the old one-shot path produced - the tuner
+    # must not start showing a different picture just because it got faster.
+    # A clip goes into ONE encoder for the whole run, so the per-frame cost is
+    # the render and nothing else.
+    clip_enc = {"proc": None, "path": None, "n": 0}
+
+    def _png(arr, level=0):
+        """A PNG, written here rather than by ffmpeg.
+
+        Measured on a 1100x287 still: ffmpeg's own encoder plus the process it
+        needs costs about 170 ms, and this costs 30.
+
+        Level 0 on purpose, and measured on a REAL frame rather than on noise -
+        noise is the one case where it does not matter, which is exactly why it
+        was the wrong thing to benchmark on. On a real preview frame:
+
+            level 0     2 ms     925 kB
+            level 1    24 ms     623 kB
+
+        The file crosses a loopback socket to a browser and is then thrown
+        away. Spending 22 ms to save 300 kB that never touches a network is the
+        wrong trade.
+        """
+        h, w = arr.shape[0], arr.shape[1]
+        rows = np.empty((h, w * 3 + 1), np.uint8)
+        rows[:, 0] = 0                     # PNG filter type 0, one per row
+        rows[:, 1:] = arr.reshape(h, w * 3)
+
+        def chunk(tag, data):
+            c = tag + data
+            return (struct.pack(">I", len(data)) + c
+                    + struct.pack(">I", zlib.crc32(c)))
+        return (b"\x89PNG\r\n\x1a\n"
+                + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(rows.tobytes(), level))
+                + chunk(b"IEND", b""))
+
+    def _still(path, req_):
+        """The frame the page asked for, as a PNG on disk.
+
+        A CROP is done here in numpy: there is no resampling in a crop, so
+        there is nothing ffmpeg could do differently, and skipping it turns
+        170 ms into 30. A FIT still goes through ffmpeg, because its lanczos is
+        what the page has always shown and a different kernel would quietly
+        change the thing being judged - but ffmpeg hands back raw pixels now
+        and the PNG is written here. Verified bit-identical: 0 of 947100
+        values differ from what the old path produced.
+        """
+        crop, fit = req_.get("crop"), req_.get("fit")
+        if crop:
+            cw = max(1, min(int(crop[0]), W))
+            ch = max(1, min(int(crop[1]), H))
+            rgb = np.frombuffer(fbo_final.read(components=3),
+                                np.uint8).reshape(H, W, 3)
+            # ROUND, do not floor. ffmpeg's crop evaluates (iw-cw)/2 as a
+            # double and lrints it, so 2447-760 = 1687 halves to 843.5 and
+            # lands on 844. Flooring put the 1:1 view one pixel to the left of
+            # where it has always been - invisible in a screenshot, and exactly
+            # the kind of thing that matters when the dither is what you are
+            # judging. Verified: at dx=-1 the two crops were bit-identical.
+            x0 = max(0, min(W - cw, int(round((W - cw) / 2.0))))
+            y0 = max(0, min(H - ch, int(round((H - ch) / 2.0))))
+            blob = _png(np.ascontiguousarray(rgb[y0:y0 + ch, x0:x0 + cw]))
+        else:
+            raw = fbo_final.read(components=3)
+            vf = req_.get("vf") or ""
+            if fit:
+                vf = "scale=%d:-1:flags=lanczos" % max(16, min(int(fit), W))
+            cmd = [ff, "-hide_banner", "-loglevel", "error",
+                   "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (W, H),
+                   "-i", "pipe:0"]
+            if vf:
+                cmd += ["-vf", vf]
+            cmd += ["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                    "pipe:1"]
+            p = subprocess.run(cmd, input=raw, capture_output=True)
+            if p.returncode != 0 or not p.stdout:
+                return p.stderr.decode("utf8", "replace")[-400:] or "no output"
+            ow = max(16, min(int(fit), W)) if fit else W
+            # The height comes from what came back, not from repeating
+            # ffmpeg's rounding rule here and hoping the two agree.
+            oh, rem = divmod(len(p.stdout), ow * 3)
+            if rem or oh < 1:
+                return "the scaler returned %d bytes, which is not %d px wide" % (
+                    len(p.stdout), ow)
+            blob = _png(np.frombuffer(p.stdout, np.uint8).reshape(oh, ow, 3))
+        try:
+            with open(path, "wb") as fh:
+                fh.write(blob)
+        except OSError as e:
+            return str(e)
+        return None
+
+    def serve_emit(fr):
+        t0 = time.time()
+        out = req.get("out")
+        gl_ms = int((t0 - req.get("gl_t0", t0)) * 1000)
+        if req.get("clip_open"):
+            if clip_enc["proc"] is None:
+                clip_enc["path"] = out or os.path.join(WORK_ROOT, "tuner_clip.mp4")
+                d = os.path.dirname(os.path.abspath(clip_enc["path"]))
+                if d:
+                    os.makedirs(d, exist_ok=True)
+                # An odd dimension cannot be encoded, and "scale=W:-1" will
+                # happily produce one: 1200 wide off a 2447x638 canvas is
+                # 313 high, and libx264 then refuses to open at all. Round
+                # down to even whatever the caller asked for.
+                vf = req.get("vf") or ""
+                vf = (vf + "," if vf else "") + "crop=trunc(iw/2)*2:trunc(ih/2)*2"
+                cmd = [ff, "-hide_banner", "-loglevel", "error", "-y",
+                       "-threads", str(a.threads),
+                       "-f", "rawvideo", "-pix_fmt", "rgb24",
+                       "-s", "%dx%d" % (W, H), "-framerate", str(FPS),
+                       "-i", "pipe:0", "-r", str(FPS)]
+                if vf:
+                    cmd += ["-vf", vf]
+                cmd += ["-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
+                        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                        clip_enc["path"]]
+                clip_enc["proc"] = popen_polite(cmd, stdin=subprocess.PIPE)
+                clip_enc["n"] = 0
+            try:
+                clip_enc["proc"].stdin.write(fbo_final.read(components=3))
+            except (BrokenPipeError, OSError) as e:
+                # The encoder rejected something. Report it and stay alive -
+                # a tuner whose renderer dies on one bad clip is back to
+                # paying the 5.7 s startup.
+                req["clip_open"] = False
+                clip_enc["proc"] = None
+                say({"error": "the clip encoder stopped: %s" % e})
+                return
+            clip_enc["n"] += 1
+            if req.get("last"):
+                try:
+                    clip_enc["proc"].stdin.close()
+                    clip_enc["proc"].wait(timeout=120)
+                except Exception:
+                    clip_enc["proc"].kill()
+                say({"clip": clip_enc["path"], "frames": clip_enc["n"],
+                     "fps": round(clip_enc["n"] / max(time.time() - clip_t[0], 1e-6), 1)})
+                clip_enc["proc"] = None
+            return
+        if not out:
+            say({"error": "no output path given"})
+            return
+        d = os.path.dirname(os.path.abspath(out))
+        if d:
+            os.makedirs(d, exist_ok=True)
+        err = _still(out, req)
+        if err:
+            say({"error": "ffmpeg: %s" % err})
+        else:
+            say({"frame": fr, "out": out,
+                 "ms": int((time.time() - t0) * 1000),
+                 "plate_ms": req.get("plate_ms", 0),
+                 "cached": bool(req.get("plate_hit")),
+                 "gl_ms": gl_ms})
+
+    clip_t = [time.time()]
+    served = [0]
+
+    for k, frame, buf in (serve_feed() if a.serve else sequential_feed()):
+        t_plate.write(buf)
+        served[0] += 1
+        req["gl_t0"] = time.time()
 
         # Animated settings, evaluated for THIS frame. The uniform block below
         # already reads a.sky_gain and friends once per frame, so moving them
@@ -2168,6 +2669,7 @@ def main():
         if tracks:
             for _name, _tr in tracks.items():
                 setattr(a, _name, _tr.at(frame))
+        if tracks or a.serve:
             # These four are parsed out of their comma strings once, before the
             # loop. An animated one has to be re-parsed here or its uniform
             # never moves. Four tiny arrays against a 25 Mpx frame: free.
@@ -2489,20 +2991,22 @@ def main():
             setu(comp_prog, nm, val)
         fbo_final.use(); fbo_final.clear(0, 0, 0, 1); comp_vao.render()
 
-        if sinks:
+        if a.serve:
+            serve_emit(frame)
+        elif sinks:
             # ONE frame, sliced however many ways. The plates therefore carry byte-identical
             # content through the 1000 px overlap, and full brightness in both -
             # which is the single requirement the delivery cannot get wrong. There
             # is no master on disk to drift from, and no second render to disagree.
-            frame = np.frombuffer(fbo_final.read(components=3),
-                                  np.uint8).reshape(H, W, 3)
+            rgb = np.frombuffer(fbo_final.read(components=3),
+                                np.uint8).reshape(H, W, 3)
             for sk in sinks:
                 sk["proc"].stdin.write(np.ascontiguousarray(
-                    frame[:sk["y1"], sk["x0"]:sk["x1"]]).tobytes())
+                    rgb[:sk["y1"], sk["x0"]:sk["x1"]]).tobytes())
         else:
             sink.stdin.write(fbo_final.read(components=3))
 
-        if k % 15 == 0 or k == a.count - 1:
+        if not a.serve and (k % 15 == 0 or k == a.count - 1):
             el = time.time() - t_start
             done = k + 1
             fps = done / max(el, 1e-6)
@@ -2524,6 +3028,19 @@ def main():
                     print(bar.rstrip())
                 elif hasattr(sys.stdout, "note"):
                     sys.stdout.note(bar.rstrip())        # log only
+
+    # Serving stops when stdin closes or a quit arrives. There is no sink to
+    # flush and no plate stream left open - each request opened and closed its
+    # own - so this is the whole shutdown.
+    if a.serve:
+        with plate_cond:
+            plate["stop"] = True
+            plate_cond.notify_all()
+        reader_thread.join(timeout=10)
+        print("serve     stopped after %d request(s), %d plate seek(s), "
+              "%d frame(s) decoded" % (served[0], plate["seeks"],
+                                       plate["decoded"]))
+        return
 
     if sinks:
         for sk in sinks:

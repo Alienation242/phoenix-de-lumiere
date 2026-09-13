@@ -4,7 +4,7 @@
 
 Opens a page in your browser with sliders for colour, contrast, the plate, the
 oil and the dither. Move one, and the wall re-renders - one real frame through
-the real renderer, about three seconds at quarter size. What you see is what
+the real renderer, which is started once and kept alive. What you see is what
 the delivery makes, because it IS the delivery renderer.
 
 Save writes _pipeline/look.json, which render_shader.py loads as its defaults.
@@ -30,6 +30,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -307,6 +308,15 @@ class Tuner(object):
         self.work = work
         self.lock = threading.Lock()
         self.ff = ffmpeg()
+        # ONE renderer, kept alive between requests. Starting it costs 5.7 s
+        # - context, shaders, 31 mattes, the opening maps - and the frame
+        # itself costs 0.03 s. Spawning one per slider move paid the 5.7 s
+        # every time, which is the whole reason this felt slow.
+        self.warm = None
+        self.warm_div = None
+        self.clip_path = None
+        self.warm_marks = [f for _, f in MARKS]
+        self.last = {}
         self.defaults = defaults()
         self.spec = spec(self.defaults)
         # Every slider name, so /render can reject anything else rather than
@@ -406,48 +416,192 @@ class Tuner(object):
             line = (line + "\n" + note) if line else note
         return line
 
-    def render(self, params, tracks, frame, div, width, detail):
-        """One frame, as a PNG ready for the page. (bytes, note) or (None, why)."""
+    # ---- the warm renderer ------------------------------------------------
+    def _kill_warm(self):
+        p, self.warm, self.warm_div = self.warm, None, None
+        if not p:
+            return
+        try:
+            p.stdin.write('{"quit":1}\n')
+            p.stdin.flush()
+            p.wait(timeout=5)
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+    def _get_warm(self, div):
+        """A live renderer at this scale, starting one if there is not one.
+
+        Only one is kept: a second scale would mean a second GL context and a
+        second copy of every texture, and changing scale is rare.
+        """
+        if self.warm and self.warm.poll() is not None:
+            self.warm, self.warm_div = None, None
+        if self.warm and self.warm_div != div:
+            self._kill_warm()
+        if self.warm:
+            return self.warm, None
+        cmd = [sys.executable, "-u", RENDERER, "--div", str(div),
+               "--serve", "--threads", "4"]
+        try:
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True, bufsize=1,
+                                 cwd=os.path.dirname(RENDERER))
+        except OSError as e:
+            return None, "could not start the renderer: %s" % e
+        reply, err = self._read_reply(p)
+        if reply is None:
+            return None, err or "the renderer did not come up"
+        self.warm, self.warm_div = p, div
+        self.warm_marks = [f for _, f in MARKS]
+        return p, None
+
+    @staticmethod
+    def _read_reply(p):
+        """The next JSON line. Anything else the renderer prints is its banner."""
+        while True:
+            line = p.stdout.readline()
+            if not line:
+                tail = ""
+                try:
+                    tail = (p.stderr.read() or "")[-600:]
+                except Exception:
+                    pass
+                return None, "the renderer stopped" + (":\n" + tail if tail else "")
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    return json.loads(line), None
+                except ValueError:
+                    continue
+
+    def ask(self, div, cmd):
+        """Send one command, get one answer. (reply, None) or (None, why)."""
+        p, err = self._get_warm(div)
+        if p is None:
+            return None, err
+        try:
+            p.stdin.write(json.dumps(cmd) + "\n")
+            p.stdin.flush()
+        except (OSError, ValueError) as e:
+            self._kill_warm()
+            return None, "the renderer stopped listening: %s" % e
+        reply, err = self._read_reply(p)
+        if reply is None:
+            self._kill_warm()
+            return None, err
+        if reply.get("error"):
+            return None, reply["error"]
+        return reply, None
+
+    def shot_for(self, width, detail):
+        """WHAT the page wants, rather than an ffmpeg filter to get it.
+
+        The renderer can then take the quick road: a crop needs no resampling,
+        so it does it itself in about 30 ms instead of 170. The pictures are
+        the same either way - a fit still goes through the same lanczos.
+        """
+        if detail:
+            # A 1:1 slice. Fitting 2447 px into a browser hides exactly the
+            # dither and banding these sliders exist to judge.
+            return {"crop": [width, 420]}
+        return {"fit": width}
+
+    def vf_for(self, width, detail):
+        """The same thing as an ffmpeg filter, for the one-shot fallback."""
+        if detail:
+            return "crop=%d:%d:(iw-%d)/2:(ih-%d)/2" % (width, 420, width, 420)
+        return "scale=%d:-1:flags=lanczos" % width
+
+    def clip(self, params, tracks, start, count, div, width):
+        """A run of frames as one mp4. (path, None) or (None, why)."""
         with self.lock:
-            for f in os.listdir(self.work):
-                if f.lower().endswith(".png"):
-                    try:
-                        os.remove(os.path.join(self.work, f))
-                    except OSError:
-                        pass
-            # A preview look file of its own, next to the frame. It never
-            # touches _pipeline/look.json - moving a slider must not change
-            # what the delivery would render until you press Save.
             look_file = os.path.join(self.work, "preview_look.json")
             try:
                 self.write_look(look_file, self.look_dict(params, tracks))
             except OSError as e:
                 return None, "could not write the preview look file: %s" % e
-            rc, out = run(self.argv(look_file, frame, div))
-            if rc != 0:
-                return None, self._why(out)
-            pngs = [os.path.join(self.work, f) for f in os.listdir(self.work)
-                    if f.lower().endswith(".png")]
-            if not pngs:
-                return None, "the renderer wrote no frame:\n" + out[-1500:]
-            src = max(pngs, key=os.path.getmtime)
+            out = os.path.join(self.work, "preview_clip.mp4")
+            reply, err = self.ask(div, {
+                "clip": {"start": int(start), "count": int(count)},
+                "look": look_file, "out": out,
+                "vf": "scale=%d:-2:flags=bilinear" % width})
+            if reply is None:
+                return None, err
+            if not os.path.isfile(out):
+                return None, "the renderer wrote no clip"
+            self.clip_path = out
+            return out, reply
 
-            # ffmpeg does the scaling and cropping: it is here, it is fast, and
-            # it saves this tool needing an image library that this python does
-            # not have.
+    def render(self, params, tracks, frame, div, width, detail):
+        """One frame, as a PNG ready for the page. (bytes, note) or (None, why)."""
+        with self.lock:
+            look_file = os.path.join(self.work, "preview_look.json")
+            try:
+                self.write_look(look_file, self.look_dict(params, tracks))
+            except OSError as e:
+                return None, "could not write the preview look file: %s" % e
             dst = os.path.join(self.work, "preview_out.png")
-            if detail:
-                # A 1:1 slice. Fitting 2447 px into a browser hides exactly the
-                # dither and banding these sliders exist to judge.
-                vf = "crop=%d:%d:(iw-%d)/2:(ih-%d)/2" % (width, 420, width, 420)
-            else:
-                vf = "scale=%d:-1:flags=lanczos" % width
-            rc, ffout = run([self.ff, "-y", "-hide_banner", "-loglevel", "error",
-                             "-i", src, "-vf", vf, dst])
-            if rc != 0 or not os.path.isfile(dst):
-                return None, "ffmpeg could not prepare the preview:\n" + ffout[-800:]
-            with open(dst, "rb") as fh:
-                return fh.read(), None
+            cmd = {"frame": int(frame), "look": look_file, "out": dst}
+            cmd.update(self.shot_for(width, detail))
+            if self.warm_marks:
+                # The bookmarks are the frames this page jumps to, and a
+                # jump is the one thing still paying for a plate seek.
+                # Hand them over once; the renderer picks them up when it
+                # has nothing more urgent to do.
+                cmd["warm"], self.warm_marks = self.warm_marks, None
+            reply, err = self.ask(div, cmd)
+            if reply is not None and os.path.isfile(dst):
+                self.last = reply
+                with open(dst, "rb") as fh:
+                    return fh.read(), None
+            # The warm renderer is gone or unhappy. Fall back to the old
+            # one-shot path rather than leaving the page with nothing: slow is
+            # a great deal better than broken.
+            png, why = self.render_oneshot(params, tracks, frame, div, width, detail)
+            if png is not None:
+                self.last = {"oneshot": True}
+                return png, None
+            return None, (err or why)
+
+    def render_oneshot(self, params, tracks, frame, div, width, detail):
+        """The original path: one renderer process for one frame."""
+        for f in os.listdir(self.work):
+            if f.lower().endswith(".png"):
+                try:
+                    os.remove(os.path.join(self.work, f))
+                except OSError:
+                    pass
+        # A preview look file of its own, next to the frame. It never
+        # touches _pipeline/look.json - moving a slider must not change
+        # what the delivery would render until you press Save.
+        look_file = os.path.join(self.work, "preview_look.json")
+        try:
+            self.write_look(look_file, self.look_dict(params, tracks))
+        except OSError as e:
+            return None, "could not write the preview look file: %s" % e
+        rc, out = run(self.argv(look_file, frame, div))
+        if rc != 0:
+            return None, self._why(out)
+        pngs = [os.path.join(self.work, f) for f in os.listdir(self.work)
+                if f.lower().endswith(".png")]
+        if not pngs:
+            return None, "the renderer wrote no frame:\n" + out[-1500:]
+        src = max(pngs, key=os.path.getmtime)
+
+        # ffmpeg does the scaling and cropping: it is here, it is fast, and
+        # it saves this tool needing an image library that this python does
+        # not have.
+        dst = os.path.join(self.work, "preview_out.png")
+        vf = self.vf_for(width, detail)
+        rc, ffout = run([self.ff, "-y", "-hide_banner", "-loglevel", "error",
+                         "-i", src, "-vf", vf, dst])
+        if rc != 0 or not os.path.isfile(dst):
+            return None, "ffmpeg could not prepare the preview:\n" + ffout[-800:]
+        with open(dst, "rb") as fh:
+            return fh.read(), None
 
     @staticmethod
     def _why(out):
@@ -526,7 +680,55 @@ class Handler(BaseHTTPRequestHandler):
                 "hasLook": os.path.isfile(LOOK),
             })
             return
+        if self.route == "/clip.mp4":
+            self._send_clip()
+            return
         self._send(404, "no", "text/plain")
+
+    def _send_clip(self):
+        """The last clip, with Range support so the scrubber works.
+
+        A <video> will play a plain 200 response but cannot seek in one, and
+        being able to drag back to the moment you were judging is most of the
+        point of watching it move.
+        """
+        path = self.tuner.clip_path
+        if not path or not os.path.isfile(path):
+            self._send(404, "no clip yet", "text/plain")
+            return
+        try:
+            size = os.path.getsize(path)
+            rng = self.headers.get("Range") or ""
+            lo, hi = 0, size - 1
+            partial = False
+            if rng.startswith("bytes="):
+                a, _, b = rng[6:].partition("-")
+                if a.strip():
+                    lo = min(int(a), size - 1)
+                    if b.strip():
+                        hi = min(int(b), size - 1)
+                    partial = True
+            if hi < lo:
+                lo, hi = 0, size - 1
+                partial = False
+            with open(path, "rb") as fh:
+                fh.seek(lo)
+                body = fh.read(hi - lo + 1)
+        except (OSError, ValueError) as e:
+            self._send(500, "could not read the clip: %s" % e, "text/plain")
+            return
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        if partial:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (lo, hi, size))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionAbortedError):
+            pass              # the page moved on, or the player stopped buffering
 
     def do_POST(self):
         t = self.tuner
@@ -547,7 +749,35 @@ class Handler(BaseHTTPRequestHandler):
             import base64
             self._json(200, {"ok": True,
                              "png": base64.b64encode(png).decode("ascii"),
-                             "flags": t.flags(params, tracks)})
+                             "flags": t.flags(params, tracks),
+                             "spent": t.last})
+            return
+
+        if self.route == "/clip":
+            params = b.get("params") or {}
+            tracks = b.get("tracks") or {}
+            div = int(b.get("div") or t.div)
+            if div not in (1, 2, 4):
+                div = t.div
+            width = max(320, min(2400, int(b.get("width") or 1100)))
+            seg = CFG["segment"]
+            lo, hi = seg["in"] - seg["handles"], seg["out"] + seg["handles"]
+            # A clip runs FORWARD from the frame you are looking at, so what
+            # you were judging is the first thing you see - and it is clamped
+            # so a request near the end cannot ask for frames off the tail.
+            secs = max(1.0, min(20.0, float(b.get("seconds") or 4.0)))
+            start = max(lo, min(int(b.get("frame") or lo), hi))
+            count = max(1, min(int(round(secs * FPS)), hi - start + 1))
+            path, info = t.clip(params, tracks, start, count, div, width)
+            if path is None:
+                self._json(200, {"ok": False, "error": info})
+                return
+            self._json(200, {"ok": True,
+                             "url": "/clip.mp4?r=%d" % int(time.time() * 1000),
+                             "frames": info.get("frames", count),
+                             "fps": info.get("fps"),
+                             "start": start, "seconds": round(count / FPS, 2),
+                             "mb": round(os.path.getsize(path) / 1048576.0, 2)})
             return
 
         if self.route == "/save":
@@ -585,8 +815,9 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser(description="sliders for the look")
     ap.add_argument("--div", type=int, default=4, choices=(1, 2, 4),
-                    help="preview scale. 4 is about 3 s a frame, 2 is sharper "
-                         "and slower")
+                    help="preview scale. 4 is the quick one, 2 is sharper "
+                         "and slower. Changing it in the page restarts the "
+                         "renderer, which costs a few seconds once")
     ap.add_argument("--frame", type=int, default=None,
                     help="which frame to open on (default: 3:10, where there is "
                          "something to look at)")
@@ -614,7 +845,9 @@ def main():
 
     print()
     print("  sliders   %s" % url)
-    print("  previews  1/%d scale, one real frame through render_shader.py" % a.div)
+    print("  previews  1/%d scale, real frames through render_shader.py" % a.div)
+    print("            the renderer starts once and stays up, so the first")
+    print("            frame costs a few seconds and the rest are quick.")
     print("  saves to  %s" % LOOK)
     print("            render_shader.py reads that as its defaults, so")
     print("            EXPORT.cmd picks up whatever you save here.")
@@ -634,6 +867,7 @@ def main():
         print("  stopped.")
     finally:
         srv.server_close()
+        tuner._kill_warm()     # do not leave a renderer holding the GPU
 
 
 if __name__ == "__main__":
