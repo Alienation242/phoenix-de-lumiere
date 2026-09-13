@@ -174,6 +174,17 @@ GROUPS = [
          "how hard it shades the pane chamfers. The one number for 'too much'"),
         ("flute_ao", "float", 0.0, 1.5, 0.05,
          "how dark a flute is from its own depth, whatever the sun does"),
+        ("pillar_ambient", "float", 0.0, 1.0, 0.05,
+         "AMBIENT LIGHT ON THE PILLARS - how much the sky's colour tints the "
+         "stone. Its hue only, normalised by its own brightness, so dusk and "
+         "midday shift the stone without either one making it darker. The sky "
+         "colour is keyframed across the whole piece, so the pillars follow "
+         "the day for free. At 1 they simply become the sky"),
+        ("pillar_noise", "float", 0.0, 1.0, 0.05,
+         "how much of the plate's grain lands on the pillars. The pillars "
+         "carry the flutes, the cylinder and the sun crossing them, and at "
+         "full grain the dither sits on top of all of it. 0 still breathes "
+         "with the arc, it just stops being speckled"),
     ]),
     ("Dither and pillars", [
         ("levels", "int", 4, 128, 1,

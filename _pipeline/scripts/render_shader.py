@@ -1530,6 +1530,25 @@ def main():
                          "cap 41%% brighter than the shaft and the plinth 15%% - "
                          "so the shaft read as a dark band lying across the "
                          "pillar between them")
+    ap.add_argument("--pillar-noise", type=float, default=0.25,
+                    help="how much of the plate's grain lands on the pillars. "
+                         "1 is every bit of it, 0 is none - the pillar still "
+                         "breathes with the arc, it just stops being dithered. "
+                         "The pillars carry the flutes, the cylinder and the "
+                         "sun crossing them, and at full grain the dither sits "
+                         "on top of all of it: measured on the shaft, going "
+                         "from 1 to 0.25 drops the speckle 61 %% and leaves the "
+                         "carving untouched, so the carving-to-speckle ratio "
+                         "goes 1.5 -> 3.7")
+    ap.add_argument("--pillar-ambient", type=float, default=0.45,
+                    help="how much the sky's COLOUR tints the pillar stone - "
+                         "its hue only, normalised by its own luma, so dusk and "
+                         "midday shift the stone without either one changing "
+                         "how bright it is. --color is keyframed across the "
+                         "piece, so the pillars follow the day for free. At "
+                         "0.45 the stone's red/blue ratio runs 0.72 to 2.28 "
+                         "across the piece against 1.24 for the bare stone; at "
+                         "1 the pillars simply become the sky")
     ap.add_argument("--plate-hp", type=float, default=1.0,
                     help="how much of the wall's own banding to take off the "
                          "pillars. 1 = all of it, and the plate's grain is kept "
@@ -2379,6 +2398,8 @@ def main():
             setu(pil_prog, "uPlateMean", plate_mean)
             setu(pil_prog, "uPlateHP", a.plate_hp)
             setu(pil_prog, "uPlateBlur", a.plate_blur)
+            setu(pil_prog, "uPlateNoise", a.pillar_noise)
+            setu(pil_prog, "uAmbient", a.pillar_ambient)
             setu(pil_prog, "uIntro", scene)
             setu(pil_prog, "uFlutes", a.flutes)
             setu(pil_prog, "uFluteDepth", a.flute_depth)

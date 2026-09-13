@@ -49,6 +49,8 @@ uniform vec2  uSunDir;        // where the light is, in wall space: x across
 uniform float uPlateMean;     // THIS frame's mean luma, straight from noise_arc.csv
 uniform float uPlateHP;       // 1 = keep the plate's grain, drop the wall's banding
 uniform float uPlateBlur;     // radius of "local", in canvas px
+uniform float uPlateNoise;    // 1 = the plate's full grain, 0 = none of it
+uniform float uAmbient;       // how much the sky's colour tints the stone
 uniform vec4  uCol0;          // x, y, w, h of column body 1, in canvas px
 uniform vec4  uCol1;
 uniform float uCanvasW;
@@ -130,7 +132,19 @@ void main() {
     // is the cylinder. It needs real range or the pillar reads as a flat slab.
     // Brighter and with far more range across the shaft than before. These are
     // meant to be lit stone standing in the room, not silhouettes.
-    vec3 col = uStone * (0.30 + 1.05 * NoV) + env * 0.34;
+    // AMBIENT. The stone takes the colour of the air around it, not the
+    // brightness - the sky's hue, normalised by its own luma, so a cold blue
+    // afternoon and a red sunset shift the pillars without either of them
+    // making the stone darker or brighter than the other. uColor is keyframed
+    // across the whole piece, so these follow the day for free.
+    //
+    // Clamped because the track reaches (1.15, 0.26, 0.14) at 3:51, and an
+    // unclamped hue that extreme turns limestone into a traffic cone.
+    vec3 amb = uColor / max(dot(uColor, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+    amb = clamp(amb, vec3(0.45), vec3(1.85));
+    vec3 stone = uStone * mix(vec3(1.0), amb, uAmbient);
+
+    vec3 col = stone * (0.30 + 1.05 * NoV) + env * 0.34;
     col *= (1.0 + fluteShade);
 
     // a vertical specular band that slides around the shaft as the camera moves
@@ -149,7 +163,7 @@ void main() {
     //
     // The cap and plinth are already wider than the shaft. That silhouette is
     // what says "capital" - it does not need a brightness step as well.
-    if (uTrimLift > 0.0) col = mix(col, col * 1.12 + uStone * 0.05, trim * uTrimLift);
+    if (uTrimLift > 0.0) col = mix(col, col * 1.12 + stone * 0.05, trim * uTrimLift);
 
     // No contact darkening. It multiplied the silhouette down to 0.45 and drew
     // a hard dark stripe down both sides of every pillar - a painted-on shadow,
@@ -184,7 +198,12 @@ void main() {
         float local = acc / 9.0;
         Lp = mix(Lp, clamp(uPlateMean + (Lp - local), 0.0, 1.0), uPlateHP);
     }
-    col *= mix(0.45, 1.30, Lp);
+    // How much of that grain actually lands. The pillars carry real shading -
+    // the flutes, the cylinder, the sun crossing them - and at full strength
+    // the dither sits on top of all of it and flattens it out. Fading toward
+    // the frame's own mean keeps the pillar breathing with the arc while
+    // letting the carving read.
+    col *= mix(0.45, 1.30, mix(uPlateMean, Lp, uPlateNoise));
     col *= mix(0.30, 1.10, uArc) * uGain;
 
     col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, uSaturation);

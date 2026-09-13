@@ -103,6 +103,11 @@ objects (inside)     loose in the room         move with the camera
 the two pillars      nearest the viewer        move most, and occlude the objects
 ```
 
+The pillars take the sky's colour as ambient light (`--pillar-ambient`), so they
+go blue at night and hot at last light along with everything else, and the
+plate's grain is mostly faded off them (`--pillar-noise`) so the flutes and the
+crossing sun can be seen. Both measured in `04_DECISIONS.md`.
+
 A slow left-right camera drives all of it, and each layer moves by a different
 amount. On a flat wall, differential motion *is* depth.
 

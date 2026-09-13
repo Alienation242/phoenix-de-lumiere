@@ -96,6 +96,49 @@ smaller than the bands). Measured after: the cap went from +40 % of the shaft to
 **Same mistake as** the chrome looking transparent, which was `uRoomMix`
 sampling the plate per pixel and stamping the wall onto the metal.
 
+### The pillars take the sky's COLOUR as ambient light, not its brightness.
+**Because** a pillar standing in a room takes the colour of the air around it,
+and `--color` is already keyframed across the whole piece — night blue, dawn
+violet, a hot sunrise, cold daylight, a red last light. The stone gets the
+sky's **hue only**, normalised by its own luma, so dusk and midday shift it
+without either one making it darker or brighter than the other.
+**Clamped**, because the track reaches (1.15, 0.26, 0.14) at 3:51 and an
+unclamped hue that extreme turns limestone into a traffic cone.
+**Measured** across the twelve colour keys, the stone's red/blue ratio runs:
+
+| `--pillar-ambient` | red/blue ratio across the piece |
+|---|---|
+| 0 | 1.24 flat — bare stone, the same all day |
+| **0.45** (default) | **0.72 … 2.28** |
+| 0.75 | 0.51 … 3.46 |
+| 1.0 | 0.38 … 5.10 — the pillars simply become the sky |
+
+### The plate's grain is mostly OFF on the pillars.
+**Because** the pillars are the one surface carrying real shading — the
+cylinder, the flutes, the sun crossing them — and at full strength the dither
+sits on top of all of it and flattens it. Fading toward the frame's own mean
+keeps the pillar breathing with the arc and lets the carving read.
+**Measured** on the shaft with the objects out of the way, split into three
+bands:
+
+```
+                dither   carving    form   carving/dither
+--pillar-noise 1.0   10.44    15.67   49.48   1.50
+--pillar-noise 0.25   4.03    14.93   43.18   3.70
+--pillar-noise 0      3.08    14.93   42.27   4.85
+```
+
+The speckle drops 61 % from 1 to 0.25 and the carving does not move. Default is
+0.25 rather than 0 so the pillars still belong to the same dithered world as
+the rest of the wall; 0 turns the plate off there entirely. The 3.08 that
+remains at 0 is the palette quantiser, which is the PSX look and is meant to be
+there.
+
+> Two measurement traps on the way to those numbers, both of which produced
+> confident nonsense first: a chrome object was sitting over the shaft and
+> counted as grain, and the first frequency split was cutting straight through
+> the flutes so that fading the plate appeared to do almost nothing.
+
 ### The capital and plinth are the same stone as the shaft.
 **Because** they were lifted — `mix(col, col*1.12 + stone, 0.6)` — which reads as
 gentle in the code and measured 41 % brighter than the shaft at the cap. Since
