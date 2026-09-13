@@ -44,8 +44,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _common import (CFG, MASK_ROOT, PIPELINE, REF_ROOT, RENDER_ROOT, WORK_ROOT,
-                     MASK_VARIANTS, ffmpeg, mask_dirs, mask_variant,
-                     ref_file, source)  # noqa: E402
+                     MASK_VARIANTS, encodable_size, ffmpeg, mask_dirs,
+                     mask_variant, ref_file, source)  # noqa: E402
 
 SHADERS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shaders")
 
@@ -1253,6 +1253,21 @@ def main():
                          "named after whichever was used, so both can be "
                          "rendered one after the other without overwriting "
                          "each other. 'noise' is the old name for 'aligned'")
+    ap.add_argument("--out-width", type=int, default=0,
+                    help="scale each output file to this width, height to "
+                         "match. The RENDER still happens at --div; this only "
+                         "changes what is written. For a file that has to be "
+                         "small, render big and encode small: measured at a "
+                         "15 MB budget, encoding from the 1/2 render scored "
+                         "SSIM 0.931 against 0.896 from the 1/4 render, "
+                         "because a bigger downscale averages away the dither "
+                         "that would otherwise eat the whole bitrate")
+    ap.add_argument("--fit-mb", type=float, default=0.0,
+                    help="aim each output file at this many MB. h264 only. It "
+                         "swaps constant quality for a bitrate worked out from "
+                         "the frame count, held down by VBV so it cannot run "
+                         "away on a busy passage. Use it when there is a hard "
+                         "ceiling - an upload limit, a message attachment")
     ap.add_argument("--log", default="",
                     help="also write everything printed here to this file. The "
                          "live progress bar is left out of it")
@@ -1400,18 +1415,42 @@ def main():
     # one metre is about 258 px, so the default 220 px wavelength is a ripple
     # every 0.85 m and 900 px/s is about 3.5 m/s - a wave you can follow
     # crossing a window rather than a shimmer.
-    ap.add_argument("--ripple", type=float, default=1.2,
-                    help="how far a ripple tips the glass. 0 is off. 0.45 was "
-                         "barely there; 2.5 starts to own the window")
-    ap.add_argument("--ripple-len", type=float, default=220.0,
-                    help="wavelength in canvas px. ~258 px is a metre")
-    ap.add_argument("--ripple-speed", type=float, default=900.0,
-                    help="how fast the ring spreads, canvas px per second")
-    ap.add_argument("--ripple-spread", type=float, default=5.0,
+    ap.add_argument("--ripple", type=float, default=1.35,
+                    help="how far a ripple tips the glass, which is what "
+                         "recolours the interference. This one SATURATES: the "
+                         "angle term is clamped and the tilt feeds a "
+                         "normalize(), so past about 1.4 the colour stops "
+                         "moving and starts folding. Use --ripple-warp to make "
+                         "it bigger, not this")
+    ap.add_argument("--ripple-warp", type=float, default=0.075,
+                    help="how far a ripple DRAGS the glass, as a fraction of "
+                         "the opening. The leaded bars and the chamfers are "
+                         "built from the dragged coordinates, so the window "
+                         "itself bends - this is the one that reads as the room "
+                         "morphing. Nothing saturates; 0.2 is a funhouse mirror")
+    ap.add_argument("--ripple-shade", type=float, default=2.4,
+                    help="how much harder the ripple swings the sun shading "
+                         "than the static chamfers do. 1 treats them alike; "
+                         "above that the wave carries its own moving light")
+    ap.add_argument("--ripple-grow", type=float, default=1.6,
+                    help="how fast the disturbed AREA spreads, in reaches per "
+                         "lifetime. A drop starts as a point: 0 switches the "
+                         "whole ring field on at once, 1 has the front cross "
+                         "the full reach once before the ripple dies. Measured "
+                         "in reaches rather than px/s, so a big shape disturbs "
+                         "a big area just as quickly. 1.6 is the default "
+                         "because it is the value that is BOTH strongest and "
+                         "still plainly growing - measured, it reaches 191 px "
+                         "at 0.2 s and 481 px at 1.5 s")
+    ap.add_argument("--ripple-len", type=float, default=300.0,
+                    help="wavelength in canvas px. About 258 px is a metre")
+    ap.add_argument("--ripple-speed", type=float, default=320.0,
+                    help="how fast the rings travel outward, canvas px/s")
+    ap.add_argument("--ripple-spread", type=float, default=7.0,
                     help="how far the disturbance reaches, in object radii. "
-                         "5 puts a small object's ripple across its own window "
-                         "and no further")
-    ap.add_argument("--ripple-life", type=float, default=1.1,
+                         "7 carries a small object's ripple across its own "
+                         "window and a little way onto the masonry")
+    ap.add_argument("--ripple-life", type=float, default=2.6,
                     help="seconds before a ripple has gone")
 
     # ---- the sun ----------------------------------------------------------
@@ -1790,8 +1829,14 @@ def main():
         if impacts:
             rr = [i[3] for i in impacts]
             print("ripple    %d crossing(s), radius %.0f-%.0f px, %.0f px "
-                  "wavelength, %.1f s life"
-                  % (len(impacts), min(rr), max(rr), a.ripple_len, a.ripple_life))
+                  "wavelength, %.1f s life, warp %.3f"
+                  % (len(impacts), min(rr), max(rr), a.ripple_len,
+                     a.ripple_life, a.ripple_warp))
+            # The frames they land on, so a preview can be aimed at one
+            # instead of hunting for a ring by scrubbing.
+            fr = [seg["in"] + int(round(i[0] * FPS)) for i in impacts]
+            for k in range(0, len(fr), 14):
+                print("          %s" % " ".join("%5d" % f for f in fr[k:k + 14]))
     # Reused every frame rather than reallocated: this is inside the hot loop.
     ripple_buf = np.zeros((8, 4), "f4")
     impact_u = bg_prog.get("uImpact", None)
@@ -1880,15 +1925,27 @@ def main():
         if layout in ("canvas", "both"):
             targets.append(("CANVAS", 0, CW // a.div))
 
-        # Every delivery codec here subsamples or aligns on even dimensions, so
-        # an odd width cannot be encoded at all. At --div 4 the right plate is
-        # 3588/4 = 897 and the stitched canvas is 2447 - both odd. Better to say
-        # so plainly than to fail inside ffmpeg thirty seconds later.
-        for nm, _x, pw in targets:
-            if pw % 2 or H % 2:
-                sys.exit("--layout %s at --div %d gives %s a %dx%d frame, and an odd "
-                         "dimension cannot be encoded. Use --div 1 or 2."
-                         % (layout, a.div, nm, pw, H))
+        # An odd dimension cannot be encoded (see encodable_size). At --div 4
+        # the right plate is 3588/4 = 897 and the stitched canvas is 2447, both
+        # odd.
+        #
+        # For a DELIVERY codec that stays a hard stop: nobody should discover a
+        # one-pixel-narrow master downstream. For an H.264 REVIEW render it is
+        # not worth refusing over - it drops the last column and says so, which
+        # is what the --mp4 preview path has always done.
+        sized = []
+        for nm, x0, pw in targets:
+            ew, eh = encodable_size(pw, H)
+            if (ew, eh) != (pw, H):
+                if a.codec != "h264":
+                    sys.exit("--layout %s at --div %d gives %s a %dx%d frame, and an "
+                             "odd dimension cannot be encoded in %s. Use --div 1 or "
+                             "2, or --codec h264 for a review render."
+                             % (layout, a.div, nm, pw, H, a.codec))
+                print("output    %-6s %dx%d -> %dx%d  (even dimensions for the encoder; "
+                      "review only)" % (nm, pw, H, ew, eh))
+            sized.append((nm, x0, ew, eh))
+        targets = sized
 
         # A tag goes straight into a file name, so anything that is not
         # plainly safe there becomes a hyphen rather than a surprise.
@@ -1896,22 +1953,56 @@ def main():
         if not tag:
             tag = "MASK-" + a.masks.upper()
 
-        for nm, x0, pw in targets:
+        if (a.out_width or a.fit_mb) and a.codec != "h264":
+            sys.exit("--out-width and --fit-mb rescale and rate-limit the "
+                     "output, which is the opposite of what a delivery is for. "
+                     "They are review-render options: use --codec h264.")
+
+        for nm, x0, pw, ph in targets:
             fname = "PxDL_SW_%s_%05d-%05d_%s.%s" % (
                 nm, a.start, last, tag, spec["ext"])
             path = os.path.join(outdir, fname)
+
+            vf, ow, oh = [], pw, ph
+            if a.out_width and a.out_width < pw:
+                ow = int(a.out_width) // 2 * 2
+                oh = int(round(ph * ow / float(pw))) // 2 * 2
+                vf = ["-vf", "scale=%d:%d:flags=lanczos" % (ow, oh)]
+
+            if a.fit_mb > 0.0:
+                # Size is bitrate times duration and nothing else, so work back
+                # from the duration this render actually has. The 0.93 leaves
+                # the container its share. VBV then stops a busy passage
+                # borrowing more than the buffer holds, which is what makes a
+                # ceiling a ceiling rather than an average.
+                secs = max(a.count / float(FPS), 1e-3)
+                kbit = max(120, int(a.fit_mb * 8192.0 * 0.93 / secs))
+                codec_args = ["-c:v", "libx264", "-preset", "slow",
+                              "-pix_fmt", "yuv420p",
+                              "-b:v", "%dk" % kbit,
+                              "-maxrate", "%dk" % int(kbit * 1.35),
+                              "-bufsize", "%dk" % (kbit * 3),
+                              "-movflags", "+faststart"]
+                print("output    %-6s %.0f MB over %.1f s  ->  %d kbit/s"
+                      % (nm, a.fit_mb, secs, kbit))
+            else:
+                codec_args = list(spec["args"])
+
             proc = popen_polite(
                 [ff, "-hide_banner", "-loglevel", "error", "-y",
                  "-threads", str(a.threads),
                  "-f", "rawvideo", "-pix_fmt", "rgb24",
-                 "-s", "%dx%d" % (pw, H), "-framerate", str(FPS), "-i", "pipe:0",
-                 "-r", str(FPS)] + spec["args"] +
+                 "-s", "%dx%d" % (pw, ph), "-framerate", str(FPS), "-i", "pipe:0",
+                 "-r", str(FPS)] + vf + codec_args +
                 ["-color_primaries", "bt709", "-color_trc", "bt709",
                  "-colorspace", "bt709", path],
                 stdin=subprocess.PIPE)
-            sinks.append(dict(proc=proc, x0=x0, x1=x0 + pw, name=nm, path=path))
-            print("output    %-6s canvas x %d..%d  ->  %dx%d  %s"
-                  % (nm, x0 * a.div, (x0 + pw) * a.div, pw, H, fname))
+            sinks.append(dict(proc=proc, x0=x0, x1=x0 + pw, y1=ph,
+                              name=nm, path=path))
+            print("output    %-6s canvas x %d..%d  ->  %dx%d%s  %s"
+                  % (nm, x0 * a.div, (x0 + pw) * a.div, ow, oh,
+                     "" if (ow, oh) == (pw, ph) else "  (rendered %dx%d)" % (pw, ph),
+                     fname))
         dst = outdir
     elif a.png:
         outdir = a.out or os.path.join(RENDER_ROOT, "master_%dx%d" % (W, H))
@@ -2111,6 +2202,9 @@ def main():
              a.ripple_speed * 6.283185307179586 / max(a.ripple_len, 1.0))
         setu(bg_prog, "uRippleSpread", a.ripple_spread)
         setu(bg_prog, "uRippleLife", a.ripple_life)
+        setu(bg_prog, "uRippleWarp", a.ripple_warp)
+        setu(bg_prog, "uRippleShade", a.ripple_shade)
+        setu(bg_prog, "uRippleGrow", a.ripple_grow)
         setu(bg_prog, "uColor", tuple(col))
         setu(bg_prog, "uLevels", a.levels)
         # uGrid is the dither cell in RENDER pixels, so it must NOT track --div.
@@ -2329,8 +2423,8 @@ def main():
             frame = np.frombuffer(fbo_final.read(components=3),
                                   np.uint8).reshape(H, W, 3)
             for sk in sinks:
-                sk["proc"].stdin.write(
-                    np.ascontiguousarray(frame[:, sk["x0"]:sk["x1"]]).tobytes())
+                sk["proc"].stdin.write(np.ascontiguousarray(
+                    frame[:sk["y1"], sk["x0"]:sk["x1"]]).tobytes())
         else:
             sink.stdin.write(fbo_final.read(components=3))
 

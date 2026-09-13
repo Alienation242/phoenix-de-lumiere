@@ -126,6 +126,14 @@ Four things make them sit in the room rather than on top of it:
   chosen from the object's near point and holds for its whole flight.
 - **The chrome reflects the same sky the wall shows.** `skyEnv()` in
   `lib_common.glsl` is shared between the background and the metal.
+- **The glass reacts when one comes through it.** Each crossing of the wall
+  plane is solved once, before the render, and leaves a ring that drags the
+  window's leaded bars and chamfers out of shape as it passes — the projection
+  deforming the real architecture. Three weights, tuneable and keyframeable:
+  `--ripple-warp` (the bend), `--ripple-shade` (the light swing), `--ripple`
+  (the colour) and `--ripple-grow` (how fast the disturbed area spreads — it
+  starts as a point, the way a drop does). See `04_DECISIONS.md` for which of
+  them saturates and what each was measured at.
 
 The camera is **orthographic** — the artist confirmed there is no viewer sweet
 spot, people move around the hall, and anamorphic geometry only works from the
@@ -279,10 +287,25 @@ report success if the plates do not verify.
 
 | preset | what | size | time |
 |---|---|---|---|
-| `Deliver` | full 9788 × 2552, ProRes 422 HQ | 51 GB | ~2 h |
-| `DeliverMax` | full 9788 × 2552, ProRes 4444 | 250 GB | ~2.7 h |
-| `Draft` | half size, H.264, full length | 1 GB | ~10 min |
-| `Proof` | half size, H.264, 25 seconds | 180 MB | ~2 min |
+| `Deliver` | full 9788 × 2552, ProRes 422 HQ, two plates | 51 GB | ~2 h |
+| `DeliverMax` | full 9788 × 2552, ProRes 4444, two plates | 250 GB | ~2.7 h |
+| `Preview` | **the whole wall as one file**, 4894 × 1276 | 1.4 GB | ~9 min |
+| `PreviewSmall` | the whole wall as one file, 2446 × 638 | 420 MB | ~3 min |
+| `Share` | the whole wall, 1228 × 320, for sending | **under 16 MB** | ~9 min |
+| `Draft` | half size, two plates, full length | 1 GB | ~10 min |
+| `Proof` | half size, two plates, 25 seconds | 180 MB | ~2 min |
+
+The three preview presets are stitched whatever `-Layout` says: two plates with
+a 1000 px overlap is the delivery format, not something anyone can watch. At ÷4
+the canvas is 2447 × 638 — an odd width, which no codec will take — so the last
+column is dropped and the render says so. That is allowed for an H.264 review
+render and still refused for a delivery codec.
+
+`Share` has a hard ceiling rather than a target, so it sets the bitrate from the
+frame count (`--fit-mb`) instead of a quality level, and the export fails if the
+finished file is over. It renders at ÷2 and scales to 1228 px on the way out
+(`--out-width`): at 900 kbit/s the downscale is worth more than the extra
+pixels, measured at SSIM 0.931 against 0.896 encoding from ÷4.
 
 Three switches, all with safe defaults:
 

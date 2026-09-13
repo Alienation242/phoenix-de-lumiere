@@ -12,10 +12,15 @@ and glaring on the wall: the blend zone double-exposes or tears. It happens
 whenever the two plates are rendered or encoded independently instead of being
 sliced from one master.
 
+A stitched canvas has no overlap to cross-check - the band is inside it - so
+--canvas checks its geometry and length instead. That is what goes wrong with a
+preview: rendered at the wrong scale, or short because an encoder dropped frames.
+
 Usage
     python verify_plates.py --a deliver\\SPSW1\\PxDL_SW_SPSW1.%05d.png ^
                             --b deliver\\SPSW2\\PxDL_SW_SPSW2.%05d.png --start 4770
     python verify_plates.py --a deliver\\SPSW1.mov --b deliver\\SPSW2.mov
+    python verify_plates.py --canvas deliver\\CANVAS.mp4 --div 2 --expect-frames 4260
 
 Needs numpy. Finds ffmpeg by itself (PATH, PXDL_FFMPEG, TouchDesigner, _pipeline\\bin).
 """
@@ -28,7 +33,8 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import CFG, ffmpeg, frame_passthrough_args, plate  # noqa: E402
+from _common import (CFG, encodable_size, ffmpeg,  # noqa: E402
+                     frame_passthrough_args, plate)
 
 A_NAME = CFG["plates"][0]["name"]
 B_NAME = CFG["plates"][1]["name"]
@@ -92,10 +98,74 @@ def read_frames(ff, src, w, h, idxs, start=None):
     return np.frombuffer(raw[: n * w * h * 2], np.uint16).reshape(n, h, w)
 
 
+def check_canvas(ff, src, div, expect_frames=None, start=None,
+                 expect_size=None, max_mb=0.0):
+    """One STITCHED canvas instead of a pair of plates.
+
+    There is no overlap to cross-check here - the 1000 px band is inside the
+    file, where it belongs - so what is left is geometry and length, which is
+    exactly what goes wrong when a preview is rendered at the wrong scale or an
+    encoder drops frames. Worth checking even though nobody projects this file.
+    """
+    cw, ch = CFG["canvas"]["w"] // div, CFG["canvas"]["h"] // div
+    ew, eh = encodable_size(cw, ch)
+    scaled = bool(expect_size)
+    if scaled:
+        ew, eh = expect_size
+    w, h = probe_size(ff, src, start)
+    n = count_frames(ff, src, start)
+    fails = []
+
+    print()
+    ok = (w, h) == (ew, eh)
+    note = "OK" if ok else "EXPECTED %dx%d" % (ew, eh)
+    print("%-6s %-46s %5dx%-5d %s" % ("CANVAS", os.path.basename(src), w, h, note))
+    if not ok:
+        fails.append("the canvas is %dx%d, expected %dx%d" % (w, h, ew, eh))
+    if scaled:
+        print("       scaled down from the %dx%d render. Review only."
+              % (cw, ch))
+    elif (ew, eh) != (cw, ch):
+        print("       the canvas at 1/%d is %dx%d and an odd dimension cannot be"
+              % (div, cw, ch))
+        print("       encoded, so the last column is dropped. Review only.")
+
+    print("\nframes: %s" % n)
+    if expect_frames and n and n != expect_frames:
+        fails.append("%d frames, expected %d" % (n, expect_frames))
+
+    if max_mb > 0.0:
+        mb = os.path.getsize(src) / 1048576.0
+        room = (1.0 - mb / max_mb) * 100.0
+        print("size:   %.2f MB against a %.0f MB ceiling  (%.0f %% spare)"
+              % (mb, max_mb, room))
+        if mb > max_mb:
+            fails.append("%.2f MB is over the %.0f MB ceiling" % (mb, max_mb))
+
+    print("\n" + "=" * 62)
+    if fails:
+        print("FAILED")
+        for f in fails:
+            print("  - " + f)
+        return 1
+    print("PASSED - one stitched canvas, right size and right length")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--a", required=True, help="%s: movie or printf sequence" % A_NAME)
-    ap.add_argument("--b", required=True, help="%s: movie or printf sequence" % B_NAME)
+    ap.add_argument("--a", help="%s: movie or printf sequence" % A_NAME)
+    ap.add_argument("--b", help="%s: movie or printf sequence" % B_NAME)
+    ap.add_argument("--canvas", help="ONE stitched canvas instead of a pair of "
+                                     "plates: checks size and length only")
+    ap.add_argument("--expect-frames", type=int, default=0,
+                    help="--canvas: how many frames it should have")
+    ap.add_argument("--expect-size", default="",
+                    help="--canvas: WxH, when the file was scaled down on the "
+                         "way out and is deliberately not the canvas size")
+    ap.add_argument("--max-mb", type=float, default=0.0,
+                    help="--canvas: fail if the file is bigger than this. For "
+                         "a preview that has to fit through something")
     ap.add_argument("--start", type=int, default=None, help="first frame number of a sequence")
     ap.add_argument("--samples", type=int, default=8)
     ap.add_argument("--div", type=int, default=1, choices=(1, 2, 4),
@@ -110,6 +180,18 @@ def main():
 
     ff = ffmpeg()
     d = max(1, a.div)
+    if a.canvas:
+        want = None
+        if a.expect_size:
+            m = re.match(r"^(\d+)\s*[xX]\s*(\d+)$", a.expect_size.strip())
+            if not m:
+                ap.error("--expect-size wants WxH, for example 1228x320")
+            want = (int(m.group(1)), int(m.group(2)))
+        sys.exit(check_canvas(ff, a.canvas, d, a.expect_frames or None, a.start,
+                              want, a.max_mb))
+    if not a.a or not a.b:
+        ap.error("give --a and --b for a pair of plates, or --canvas for one "
+                 "stitched file")
     ovx, ovw = OVERLAP_X // d, OVERLAP_W // d
     fails, dims = [], {}
 

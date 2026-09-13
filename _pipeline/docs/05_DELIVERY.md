@@ -4,13 +4,51 @@
 whole thing. Everything below is only for when something is unusual.
 
 ```
-  [1] Deliver      full 9788x2552, ProRes 422 HQ      51 GB    ~2 h
-  [2] DeliverMax   full 9788x2552, ProRes 4444       250 GB    ~2.7 h
-  [3] Draft        half size, H.264, full length       1 GB    ~10 min
-  [4] Proof        half size, H.264, 25 seconds      180 MB    ~2 min
+  [1] Deliver       full 9788x2552, ProRes 422 HQ      51 GB    ~2 h
+  [2] DeliverMax    full 9788x2552, ProRes 4444       250 GB    ~2.7 h
+  [3] Preview       WHOLE WALL, one file, half size    1.4 GB    ~9 min
+  [4] PreviewSmall  whole wall, one file, 1/4 size    420 MB    ~3 min
+  [5] Share         whole wall, one file, to send      15 MB    ~9 min
+  [6] Draft         half size, two plates              1 GB    ~10 min
+  [7] Proof         half size, two plates, 25 s       180 MB    ~2 min
 ```
 
 Run **Proof** first. If it looks right, run **Deliver**.
+
+**To watch it**, run **Preview** or **PreviewSmall** — those give you the whole
+wall as a single image instead of two plates with a 1000 px overlap, which is
+the delivery format and is not something anyone can watch.
+
+| | |
+|---|---|
+| `Preview` | 4894 × 1276, 1.4 GB. What to check the work on |
+| `PreviewSmall` | 2446 × 638, about 420 MB. Quick, and light enough to copy about |
+| `Share` | 1228 × 320, **under 16 MB**. For a message, a chat, a web page |
+
+All three are stitched whatever `-Layout` says — a preview of the whole wall is
+stitched by definition — and all three are H.264 review renders, clearly marked
+as such in their notes. None of them can go to the projectors.
+
+### How `Share` holds the ceiling
+
+Sixteen megabytes over 142 seconds is **900 kbit/s**, so the size has to be
+decided in advance rather than discovered afterwards. The preset swaps constant
+quality for a bitrate worked back from the frame count, with VBV holding down
+the busy passages, and the export **fails if the finished file is over the
+ceiling** rather than just mentioning it.
+
+The other half is what the encoder is fed. At that bitrate the plate's dither is
+the most expensive thing in the frame, so `Share` renders at **half** size and
+scales down to 1228 px on the way out — a 4× downscale that averages the dither
+away before the encoder ever sees it. Measured, same bitrate, same output size:
+
+| encoded from | SSIM against a near-lossless reference |
+|---|---|
+| the ½ render, 4894 wide | **0.931** |
+| the ¼ render, 2446 wide | 0.896 |
+
+That is why it takes nine minutes rather than three. Judge timing and staging on
+it; judge grain on `Preview`.
 
 The script checks the machine, renders, verifies the result and writes
 `DELIVERY_NOTES.txt` next to the files. It refuses to start if anything is

@@ -105,6 +105,57 @@ are already wider than the shaft; that silhouette is what says "capital", and it
 does not need a brightness step as well.
 **Changes if:** `--trim-lift` above 0 brings it back.
 
+### The ripple bends the glass rather than shading it.
+**Because** shading a straight grid and bending the grid look completely
+different from across a hall, and the point of the effect is that the
+projection appears to deform the real window. Three separate weights come off
+one wave:
+
+| | what it drives |
+|---|---|
+| `--ripple` | tips the normal, which recolours the interference |
+| `--ripple-warp` | **drags the opening's own coordinates**, so the leaded bars and the chamfers are *drawn* bent |
+| `--ripple-shade` | how much harder than the static chamfers the wave swings the sunlight |
+| `--ripple-grow` | how fast the disturbed AREA spreads — a drop starts as a point |
+
+**The tilt saturates and the warp does not.** The angle term is clamped at 0.45
+and the tilt feeds a `normalize()`, so past about 1.4 the colour stops moving
+and folds back on itself — turning `--ripple` up further makes it *worse*, not
+bigger. `--ripple-warp` has no such ceiling: 0.075 is a swell, 0.15 is a
+funhouse mirror.
+
+**It grows.** The first version switched the whole ring field on at its full
+extent the instant the object touched the glass, which is the one thing water
+never does. The front now expands, measured in *reaches per lifetime* rather
+than px/s so a big shape disturbs a big area just as fast as a small one
+disturbs a small one. The front is deliberately slower than the phase, so
+crests keep welling up in the middle and dying at the rim.
+
+**Measured** at the one crossing with no other ripple alive near it (frame
+3600), on the glass within 600 px of the impact:
+
+```
+                strength   pace   reach @0.2s   @1.5s
+as it was           2.67   0.89        1348      1277
+now                 4.03   0.43         191       481
+```
+
+Half again as strong, 2.1x slower, and it *grows* — 191 px to 481 px — where
+before it was at full size on the first frame and only ever faded.
+
+> *Pace* is how much the ripple's own contribution changes per frame relative
+> to its own size; measuring it against itself is what separates "slower" from
+> "smaller". And this is measured **locally**, within 600 px of the impact,
+> because a mean over all the glass stopped being a fair comparison the moment
+> growth went in: a ripple that starts as a point touches far fewer pixels than
+> one that switches on across the whole wall, so the average falls even as the
+> thing gets stronger where it is actually happening. An earlier version of this
+> file quoted that whole-glass average. It was measuring the wrong thing.
+
+**The plate is not warped.** Only the opening's own coordinates are. The shared
+noise stays exactly where it is, for the reason at the top of `main()` in
+`sky_oil.frag`.
+
 ### Animation locks to 30-frame increments between 3:22 and 3:44.
 **Because** every cut the plate makes in that window lands on an exact whole
 second — a 1 Hz grid. After 3:51 it breaks the grid and strobes, so go free there.

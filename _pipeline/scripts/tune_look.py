@@ -130,17 +130,39 @@ GROUPS = [
          "how much light the bars take out of the glass"),
     ]),
     ("Ripple - the glass reacting", [
+        ("ripple_warp", "float", 0.0, 0.25, 0.005,
+         "HOW FAR IT DRAGS THE GLASS, as a fraction of the opening. The leaded "
+         "bars and the chamfers are built from the dragged coordinates, so the "
+         "window itself bends - this is the one that reads as the room morphing "
+         "from across a hall. Nothing saturates: 0.075 is a swell, 0.15 is a "
+         "funhouse mirror"),
+        ("ripple_shade", "float", 0.0, 6.0, 0.1,
+         "how much harder the wave swings the sunlight than the static chamfers "
+         "do. 1 treats them alike. This is the cheapest way to make a ripple "
+         "more visible without touching its shape"),
         ("ripple", "float", 0.0, 3.0, 0.05,
-         "how far a ripple tips the glass when an object comes through. 0 is "
-         "off; around 2.5 it starts to own the window"),
+         "how far it tips the normal, which is what recolours the interference. "
+         "SATURATES around 1.4 - the angle term is clamped and the tilt feeds a "
+         "normalize(), so beyond that the colour stops moving and folds back. "
+         "Reach for ripple_warp instead"),
+        ("ripple_grow", "float", 0.0, 4.0, 0.05,
+         "HOW FAST THE DISTURBED AREA SPREADS - a drop starts as a point. 0 "
+         "switches the whole ring field on at once, which is what it used to "
+         "do; 1 has the front cross the full reach once before the ripple "
+         "dies. Measured in reaches, so a big shape disturbs a big area just "
+         "as quickly. Below about 1 the ripple stays small and weak, above 2 "
+         "it is open almost immediately and the growth stops reading"),
+        ("ripple_speed", "float", 0.0, 1500.0, 20.0,
+         "how fast the RINGS travel through that area, canvas px per second. "
+         "Faster than the front, so crests well up in the middle and die at "
+         "the rim. 900 crossed a window in a third of a second and flickered"),
+        ("ripple_life", "float", 0.1, 6.0, 0.05,
+         "seconds before it has died away. The envelope stays anchored where "
+         "the object went through, so this is how long that spot keeps moving"),
         ("ripple_len", "float", 60.0, 600.0, 10.0,
          "wavelength in canvas px. about 258 px is a metre on this wall"),
-        ("ripple_speed", "float", 0.0, 2500.0, 50.0,
-         "how fast the rings travel outward, canvas px per second"),
         ("ripple_spread", "float", 1.0, 14.0, 0.5,
          "how far the disturbance reaches, in object radii"),
-        ("ripple_life", "float", 0.1, 4.0, 0.05,
-         "seconds before it has died away"),
     ]),
     ("The sun", [
         ("sun_az", "float", -1.0, 1.0, 0.01,

@@ -100,6 +100,9 @@ uniform float uRippleFreq;    // radians per canvas px
 uniform float uRippleOmega;   // radians per second, = speed * freq
 uniform float uRippleSpread;  // how far the disturbance reaches, in radii
 uniform float uRippleLife;    // seconds before it has gone
+uniform float uRippleWarp;    // how far it DRAGS the glass, in opening widths
+uniform float uRippleShade;   // extra weight on the light swing it causes
+uniform float uRippleGrow;    // how fast the disturbed area spreads. 0 = all at once
 uniform float uFilmMin;
 uniform float uFilmMax;
 uniform float uLevels;
@@ -178,13 +181,26 @@ void fanLight(vec2 ouv, float archFrac, out vec2 tilt, out float bar,
     cell = vec2(hx, -hy);
 }
 
-// The ring an object leaves in the glass on its way through. It is added to
-// the pane tilt, so it moves the same normals the chamfers and the sun already
-// use - which is why it recolours the interference AND swings the sun shading,
-// rather than being a pattern drawn over the top.
-vec2 rippleTilt(vec2 atPx) {
+// The ring an object leaves in the glass on its way through.
+//
+// Returned RAW, without the amplitude, because three different things are made
+// out of it and they want their own weights:
+//
+//   * uRippleAmp   tips the normal, which recolours the interference. This one
+//                  saturates: the angle term is clamped at 0.45 and the tilt
+//                  feeds a normalize(), so past about 1.4 the colour stops
+//                  moving and starts folding back on itself. More is not more.
+//   * uRippleWarp  DRAGS the opening's own coordinates, so the leaded bars and
+//                  the chamfers bend with the wave. Nothing saturates here -
+//                  it is the window itself deforming, which is the one that
+//                  reads as the room morphing from across a hall.
+//   * uRippleShade swings the sun shading harder without touching either.
+//
+// The plate is NOT warped. It is the shared noise and it stays where it is -
+// see the note at the top of main().
+vec2 rippleField(vec2 atPx) {
     vec2 acc = vec2(0.0);
-    if (uRippleAmp <= 0.0) return acc;
+    if (uRippleAmp <= 0.0 && uRippleWarp <= 0.0) return acc;
     for (int i = 0; i < uImpactN; i++) {
         vec2  c    = uImpact[i].xy;
         float age  = uImpact[i].z;
@@ -204,12 +220,32 @@ vec2 rippleTilt(vec2 atPx) {
         // So the PHASE travels - the rings still move outward - while the
         // envelope hangs on the impact point and fades. That is the drop-in-
         // water read, and it stays where the object actually was.
-        float atten = exp(-d / max(rad * uRippleSpread, 1.0));
+        float reach = max(rad * uRippleSpread, 1.0);
+        float atten = exp(-d / reach);
         float life  = exp(-age / max(uRippleLife, 1e-3));
+
+        // The disturbance GROWS. Without this the whole ring field switched on
+        // at its full extent the instant the object touched the glass, which is
+        // the one thing water never does - a drop starts as a point.
+        //
+        // The front is measured in reaches per lifetime rather than px/s, so it
+        // scales with the object: a big shape disturbs a big area just as fast
+        // as a small one disturbs a small one, which is what a bigger splash
+        // looks like. 1.0 means the front crosses the whole reach exactly once
+        // before the ripple has died.
+        //
+        // The front is SLOWER than the phase, so crests keep welling up in the
+        // middle and dying as they reach the rim, the way they do in water.
+        if (uRippleGrow > 0.0) {
+            float front = reach * uRippleGrow * age / max(uRippleLife, 1e-3);
+            float soft  = max(reach * 0.22, 1.0);
+            atten *= smoothstep(front + soft, front - soft, d);
+        }
+
         acc += normalize(dv + vec2(1e-5))
              * sin(d * uRippleFreq - age * uRippleOmega) * atten * life;
     }
-    return acc * uRippleAmp;
+    return acc;
 }
 
 // The leaded grid inside one opening. openUV is already 0..1 across THIS
@@ -306,17 +342,26 @@ void main() {
     // clamped well away from grazing so no window blows out white.
     vec2 lo = (openUV * 2.0 - 1.0) * uOilSweep;
     lo.x += uCamX * uParIn * px.x * 8.0;
+    // lo is finished below, once the ripple's warp is known.
 
     // The panes. Which row count applies is decided by the opening's own index:
     // the mattes are numbered upper windows first, then lower, then doors, so
     // one threshold separates them without a second texture.
+    // Only in the glass. A door is not a pane and the masonry does not ring.
+    vec2 rip = rippleField(uv * uCanvas) * mWin * inOpen;
+
+    // The warp goes in FIRST, on the coordinates the grid is built from, so the
+    // bars and the chamfers are drawn already bent. Adding it afterwards would
+    // only shade a straight grid, which is the difference between the glass
+    // moving and a pattern sliding over it.
+    vec2 ouvR = clamp(openUV + rip * uRippleWarp, 0.0, 1.0);
+
     vec2 paneTilt, paneCell; float paneBar;
     bool isLow = (openIdx > uPaneSplit);
-    paneGrid(openUV, isLow ? uPaneRowsLow : uPaneRowsUp,
+    paneGrid(ouvR, isLow ? uPaneRowsLow : uPaneRowsUp,
              isLow ? uArchLow : uArchUp, paneTilt, paneBar, paneCell);
-    // Only in the glass. A door is not a pane and the masonry does not ring.
-    paneTilt += rippleTilt(uv * uCanvas) * mWin * inOpen;
-    lo += paneTilt;
+    vec2 ripTilt = rip * uRippleAmp;
+    lo += paneTilt + ripTilt;
     vec3 odir  = normalize(vec3(lo.x, lo.y, 1.0));
     vec3 onrm  = -odir;
     vec3 oview = normalize(vec3(lo.x * 0.5, lo.y * 0.5, -1.0));
@@ -342,7 +387,12 @@ void main() {
     // the whole lighting model for the chamfers. Nothing is drawn: the faces
     // that turn toward the sun brighten and the ones turning away fall off,
     // which is why the effect moves when the sun does.
-    oilColor *= max(0.0, 1.0 + dot(paneTilt, uSunDir) * uSunShade);
+    // The chamfers and the ripple are dotted with the light separately so the
+    // ripple can be made to swing much harder than the static chamfers without
+    // dragging them with it - uSunShade is already "the one number for too
+    // much" on those.
+    oilColor *= max(0.0, 1.0 + uSunShade * (dot(paneTilt, uSunDir)
+                                            + dot(ripTilt, uSunDir) * uRippleShade));
 
     // And the recess shadow, which is the part you actually SEE move. The
     // chamfer is 12 % of a pane on each side, so re-lighting it alone changed

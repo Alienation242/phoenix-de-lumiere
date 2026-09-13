@@ -62,6 +62,21 @@ def mask_variant(name):
     return v
 
 
+def encodable_size(w, h):
+    """The nearest size an encoder will actually take.
+
+    Every codec in the delivery path either subsamples chroma 2x2 or aligns its
+    macroblocks on even dimensions, so an ODD dimension cannot be encoded at
+    all. The canvas divided by 4 is 2447 x 638 - odd width - and without this
+    the encoder exits on its first frame and the render dies on a broken pipe
+    several seconds later, pointing at the wrong line entirely.
+
+    One function, used by whatever writes a file AND by whatever checks it
+    afterwards, so the two can never disagree about what the size should be.
+    """
+    return (int(w) // 2 * 2, int(h) // 2 * 2)
+
+
 def mask_dirs(variant="layer"):
     """(mask folder, reference folder) for a mask variant."""
     if mask_variant(variant) == "aligned":

@@ -47,7 +47,8 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Deliver', 'DeliverMax', 'Draft', 'Proof')]
+    [ValidateSet('Deliver', 'DeliverMax', 'Preview', 'PreviewSmall', 'Share',
+                 'Draft', 'Proof')]
     [string] $Preset,
     [switch] $Yes,
     [switch] $HQ,
@@ -91,16 +92,42 @@ $Presets = [ordered]@{
     'Deliver' = @{
         Div = 1; Codec = 'prores422hq'; MBPerFrame = 12.2; SecPerFrame = 1.7
         What = 'THE DELIVERY. Full 9788x2552, ProRes 422 HQ, 10-bit 4:2:2.'
-        Note = 'Overlap matches to ~1.0/255 - better than the supplied noise plates, which differ by 1.5.'
+        Note = 'Overlap matches to ~1.0/255 - the supplied noise plates differ by 7.1.'
     }
     'DeliverMax' = @{
         Div = 1; Codec = 'prores4444'; MBPerFrame = 60.1; SecPerFrame = 2.3
         What = 'Full 9788x2552, ProRes 4444, 12-bit 4:4:4.'
         Note = 'Overlap is BIT-IDENTICAL (0.0000). Needs a big drive - about 250 GB.'
     }
+    # MEASURED on a full-length run of each, not scaled from the plates: H.264
+    # does not halve its bitrate when you halve the pixels, and the first guess
+    # under-estimated both by about a third.
+    'Preview' = @{
+        Div = 2; Codec = 'h264'; MBPerFrame = 1.6; SecPerFrame = 0.51
+        Layout = 'Stitched'
+        What = 'THE WHOLE WALL AS ONE FILE. Half size 4894x1276, H.264.'
+        Note = 'Stitched, so you watch the wall as one image. 1.4 GB, 9 min.'
+    }
+    'PreviewSmall' = @{
+        Div = 4; Codec = 'h264'; MBPerFrame = 1.9; SecPerFrame = 0.55
+        Layout = 'Stitched'
+        What = 'The whole wall as one file, quarter size 2446x638, H.264.'
+        Note = 'Three times lighter and three times faster. 0.4 GB, 3 min.'
+    }
+    # Rendered at 1/2 and encoded down to 1228 px wide, which is the whole
+    # point: at a 15 MB budget the dither is the most expensive thing in the
+    # frame, and a bigger downscale averages it away before the encoder ever
+    # sees it. Measured, same bitrate, same output size - encoding from the 1/2
+    # render scores SSIM 0.931 against 0.896 from the 1/4 render.
+    'Share' = @{
+        Div = 2; Codec = 'h264'; SecPerFrame = 0.51
+        Layout = 'Stitched'; OutWidth = 1228; FitMB = 15
+        What = 'ONE SMALL FILE TO SHARE. 1228x320, under 16 MB.'
+        Note = 'The whole wall, the whole segment, small enough to put in a message.'
+    }
     'Draft' = @{
         Div = 2; Codec = 'h264'; MBPerFrame = 1.0; SecPerFrame = 0.55
-        What = 'Half size 4894x1276, H.264. For review, NOT for projection.'
+        What = 'Half size 4894x1276, H.264, as two plates. For review.'
         Note = 'Correct plate geometry, so the overlap can still be checked.'
     }
     'Proof' = @{
@@ -242,14 +269,17 @@ if (-not $Preset) {
     foreach ($k in $Presets.Keys) {
         $i++
         $p = $Presets[$k]
-        Write-Host ("  [{0}]  {1,-11} {2}" -f $i, $k, $p.What) -ForegroundColor White
+        Write-Host ("  [{0}]  {1,-13} {2}" -f $i, $k, $p.What) -ForegroundColor White
         Line ("                   {0}" -f $p.Note)
         Line
     }
     Line '  [q]  quit'
     Line
     $pick = Read-Host 'Which one? (1 is the delivery)'
-    if ($pick -eq 'q') { return }
+    # exit 0, not return: EXPORT.cmd reads the exit code and tells the user
+    # something went wrong on anything non-zero. Choosing to quit is not a
+    # problem, and being told it was one at the end of a menu is unnerving.
+    if ($pick -eq 'q') { exit 0 }
     if (-not $pick) { $pick = '1' }
     $idx = 0
     if (-not [int]::TryParse($pick, [ref]$idx) -or $idx -lt 1 -or $idx -gt $Presets.Count) {
@@ -274,6 +304,16 @@ $MaskSet = Get-MaskRoots $Masks
 $MaskTag = "MASK-" + $Masks.ToUpper()
 $P = $Presets[$Preset]
 
+# A preview of the whole wall is stitched by definition - two plates with a
+# 1000 px overlap is the delivery format, not something to watch. The preset
+# says so and overrides whatever -Layout was passed.
+if ($P.Contains('Layout')) {
+    if ($Layout -ne 'Plates' -and $Layout -ne $P.Layout) {
+        Warn "$Preset is always $($P.Layout); ignoring -Layout $Layout"
+    }
+    $Layout = $P.Layout
+}
+
 # ---------------------------------------------------------------- the plan ---
 $segIn   = [int]$Cfg.segment.'in'
 $segOut  = [int]$Cfg.segment.'out'
@@ -291,11 +331,19 @@ $plate1 = $Cfg.plates[0]
 $plate2 = $Cfg.plates[1]
 $w1 = [int]$plate1.w / $div; $h1 = [int]$plate1.h / $div
 $w2 = [int]$plate2.w / $div; $h2 = [int]$plate2.h / $div
+$cw = [int]$Cfg.canvas.w / $div; $ch = [int]$Cfg.canvas.h / $div
+# same rule the renderer and the verifier use - see encodable_size in _common.py
+$ecw = [Math]::Floor($cw / 2) * 2; $ech = [Math]::Floor($ch / 2) * 2
 
 # Both writes the canvas as well as the plates, which is roughly another 90% of
 # the pixels - it is one render, but it is not one file's worth of disk.
 $sizeMul = switch ($Layout) { 'Plates' { 1.0 } 'Stitched' { 0.9 } default { 1.9 } }
-$needGB = [math]::Round($P.MBPerFrame * $sizeMul * $count / ($div * $div) / 1024.0, 1)
+$needGB = if ($P.Contains('FitMB')) {
+    # the whole point of this preset is that the size is decided in advance
+    [math]::Round([double]$P.FitMB / 1024.0, 3)
+} else {
+    [math]::Round($P.MBPerFrame * $sizeMul * $count / ($div * $div) / 1024.0, 1)
+}
 $mins   = [math]::Round($P.SecPerFrame * $count / ($div * $div) / 60.0, 0)
 
 # Asked here, after the size is known, rather than left to an environment
@@ -321,9 +369,29 @@ Line
 Line ("  frames      {0} .. {1}   ({2} frames, {3:N1} s)" -f $start, $last, $count, ($count/30.0))
 Line ("  timecode    {0} .. {1}  of the ten-minute loop" -f (Format-TC $start), (Format-TC $last))
 Line ("  the piece   {0} .. {1}   1:50 - 4:10, hand-off to bare plate at both ends" -f $segIn, $segOut)
-Line ("  plate 1     {0}  {1} x {2}   canvas x {3} .. {4}" -f $plate1.name, $w1, $h1, ($plate1.x/$div), (($plate1.x + $plate1.w)/$div))
-Line ("  plate 2     {0}  {1} x {2}   canvas x {3} .. {4}" -f $plate2.name, $w2, $h2, ($plate2.x/$div), (($plate2.x + $plate2.w)/$div))
-Line ("  overlap     {0} px, FULL BRIGHTNESS in both - do not pre-blend" -f ([int]$Cfg.overlap.w / $div))
+# A stitched preview has no plates and no seam to warn about, and at 1/4 the
+# plate sizes it would print are odd numbers that nothing will ever encode.
+# Describing the file that is actually coming out beats reciting the format.
+if ($Layout -eq 'Stitched') {
+    if ($P.Contains('OutWidth')) {
+        $sw = [int]$P.OutWidth
+        $sh = [Math]::Floor([Math]::Round($ech * $sw / [double]$ecw) / 2) * 2
+        Line ("  file        {0} x {1}   the whole wall in one small file" -f $sw, $sh)
+        Line ("              rendered at {0} x {1} and scaled down on the way out -" -f $cw, $ch)
+        Line  "              that downscale is what buys the quality at this bitrate"
+    } else {
+        Line ("  canvas      {0} x {1}   the whole wall in one file" -f $cw, $ch)
+    }
+    if ($cw -ne $ecw -or $ch -ne $ech) {
+        Line ("              encoded at {0} x {1} - an odd dimension cannot be encoded," -f $ecw, $ech)
+        Line  "              so the last column is dropped. Review only."
+    }
+    Line  "  overlap     inside the file, where it belongs"
+} else {
+    Line ("  plate 1     {0}  {1} x {2}   canvas x {3} .. {4}" -f $plate1.name, $w1, $h1, ($plate1.x/$div), (($plate1.x + $plate1.w)/$div))
+    Line ("  plate 2     {0}  {1} x {2}   canvas x {3} .. {4}" -f $plate2.name, $w2, $h2, ($plate2.x/$div), (($plate2.x + $plate2.w)/$div))
+    Line ("  overlap     {0} px, FULL BRIGHTNESS in both - do not pre-blend" -f ([int]$Cfg.overlap.w / $div))
+}
 Line ("  source      {0}" -f $(if ($HQ) { 'the HIGH-QUALITY masters (source_hq)' } else { 'the supplied mp4s - 0.019 bits/pixel' }))
 Line ("  layout      {0}" -f $(switch ($Layout) {
     'Plates'   { 'two projector plates (matches the supplied noise)' }
@@ -334,7 +402,12 @@ Line ("  masks       {0}" -f $(if ($Masks -eq 'Aligned') {
 Line ("  file names  ..._{0}.{1}" -f $Tag, $(if ($P.Codec -eq 'h264') { 'mp4' } else { 'mov' }))
 Line ("  codec       {0}" -f $P.Codec)
 Line ("  output      {0}" -f $outDir)
-Line ("  needs       about {0} GB and roughly {1} minutes" -f $needGB, $mins)
+if ($P.Contains('FitMB')) {
+    Line ("  needs       roughly {0} minutes. The size is a CEILING, not an estimate:" -f $mins)
+    Line ("              it aims at {0:N0} MB and the export fails if it comes out over." -f [double]$P.FitMB)
+} else {
+    Line ("  needs       about {0} GB and roughly {1} minutes" -f $needGB, $mins)
+}
 Line
 
 # ---------------------------------------------------------------- preflight --
@@ -456,7 +529,7 @@ Good 'ready'
 if (-not $Yes) {
     Line
     $go = Read-Host "Start the render? This takes about $mins minutes. [Y/n]"
-    if ($go -and $go -notmatch '^[Yy]') { Line 'cancelled.'; return }
+    if ($go -and $go -notmatch '^[Yy]') { Line 'cancelled.'; exit 0 }
 }
 
 $log = Join-Path $outDir ("export_{0}_{1}.log" -f $Preset, (Get-Date -Format 'yyyyMMdd-HHmmss'))
@@ -468,10 +541,13 @@ Line
 
 $started = Get-Date
 $layoutArg = switch ($Layout) { 'Plates' { 'plates' } 'Stitched' { 'canvas' } default { 'both' } }
+$fit = if ($P.Contains('FitMB')) { [double]$P.FitMB } else { 0.0 }
 $renderArgs = @('--div', $div, '--start', $start, '--count', $count,
                 '--layout', $layoutArg, '--codec', $P.Codec, '--threads', $Threads,
                 '--masks', $Masks.ToLower(), '--log', $log, '--out', $outDir,
                 '--tag', $Tag)
+if ($P.Contains('OutWidth')) { $renderArgs += @('--out-width', $P.OutWidth) }
+if ($fit -gt 0) { $renderArgs += @('--fit-mb', $fit) }
 if ($HQ) { $renderArgs += '--hq' }
 # NOT piped into Tee-Object on purpose. The progress bar rewrites one line with
 # a carriage return; a pipe in front of it turns every update into its own line
@@ -497,18 +573,20 @@ $fc = Get-ChildItem $outDir -Filter '*CANVAS*' | Sort-Object LastWriteTime | Sel
 if ($Layout -eq 'Stitched') {
     if (-not $fc) { Bad 'the stitched canvas is missing'; exit 1 }
     Line "  One stitched file, so there is no overlap to cross-check: the 1000 px"
-    Line "  band is inside it, where it belongs. Checking size and length only."
+    Line "  band is inside it, where it belongs. Checking that it is the right"
+    Line "  size and the right length instead - which is what goes wrong when a"
+    Line "  preview is rendered at the wrong scale or an encoder drops frames."
     Line
-    $vrc = 0
-    $vr = Invoke-Native 'python' @((Join-Path $PSScriptRoot 'verify_plates.py'),
-        '--a', $fc.FullName, '--b', $fc.FullName,
-        '--div', $div, '--samples', 2, '--tol', 99)
-    foreach ($l in ($vr.Lines | Where-Object { $_ -match 'frames:' })) {
-        Line $l
-        Add-Content -LiteralPath $log -Value $l
+    $vArgs = @((Join-Path $PSScriptRoot 'verify_plates.py'),
+               '--canvas', $fc.FullName, '--div', $div, '--expect-frames', $count)
+    if ($P.Contains('OutWidth')) {
+        # it was scaled on the way out, so the canvas size is not what to expect
+        $sw = [int]$P.OutWidth
+        $sh = [Math]::Floor([Math]::Round($ech * $sw / [double]$ecw) / 2) * 2
+        $vArgs += @('--expect-size', "${sw}x${sh}")
     }
-    $expect = "$([int]$Cfg.canvas.w / $div)x$([int]$Cfg.canvas.h / $div)"
-    Line "  expected $expect"
+    if ($fit -gt 0) { $vArgs += @('--max-mb', ($fit + 1)) }
+    $vrc = Invoke-NativeStream 'python' $vArgs -TeeTo $log
 } else {
     if (-not $f1 -or -not $f2) { Bad 'one or both plates are missing'; exit 1 }
 
@@ -528,13 +606,47 @@ $vrc = Invoke-NativeStream 'python' @((Join-Path $PSScriptRoot 'verify_plates.py
 }
 
 # ---------------------------------------------------------------- notes ------
+# Describe the files that were actually produced. A stitched-only run has no
+# $f1 and no $f2, and reaching through them for a name threw at the very last
+# step - after the render, after the verification, with everything on disk and
+# correct. The most expensive possible place for a null reference.
+$fileBlock = if ($Layout -eq 'Stitched') {
+@"
+THE FILE
+  $($fc.Name)
+      $ecw x $ech   the whole wall in one image
+
+  This is a STITCHED PREVIEW, not a delivery. The 1000 px overlap is inside it,
+  so it cannot be sent to the projectors - run "Deliver" for the two plates.
+"@
+} else {
+@"
+THE TWO FILES
+  $($f1.Name)
+      $w1 x $h1   covers canvas x $($plate1.x/$div) .. $(($plate1.x+$plate1.w)/$div)
+  $($f2.Name)
+      $w2 x $h2   covers canvas x $($plate2.x/$div) .. $(($plate2.x+$plate2.w)/$div)$(
+  if ($Layout -eq 'Both' -and $fc) { "
+  $($fc.Name)
+      $ecw x $ech   the same thing unsplit, if they would rather cut that" })
+
+  Full canvas is $cw x $ch. The two plates OVERLAP by
+  $([int]$Cfg.overlap.w / $div) px, between x $([int]$Cfg.overlap.x0 / $div) and x $([int]$Cfg.overlap.x1 / $div).
+  (All figures above are at the rendered 1/$div scale. At full scale the canvas
+  is $($Cfg.canvas.w) x $($Cfg.canvas.h) and the overlap is $([int]$Cfg.overlap.w) px from x $($Cfg.overlap.x0).)
+"@
+}
+
 $notes = Join-Path $outDir 'DELIVERY_NOTES.txt'
 $banner = if ($div -eq 1 -and $P.Codec -ne 'h264') { '' } else { @"
 
   *********************************************************************
   *  THIS IS A REVIEW RENDER, NOT THE DELIVERY.                       *
-  *  1/$div scale, $($P.Codec). The plate geometry is correct so the overlap
-  *  can be checked, but do not send this to the projectors.
+  *  1/$div scale, $($P.Codec). $(if ($Layout -eq 'Stitched') {
+       'The two plates are stitched together here,
+  *  so this cannot go to the projectors at all.' } else {
+       'The plate geometry is correct so the overlap
+  *  can be checked, but do not send this to the projectors.' })
   *  Run EXPORT.cmd and choose "Deliver" for the real files.
   *********************************************************************
 "@ }
@@ -543,16 +655,7 @@ PHOENIX DE LUMIERE  -  SW WALL
 Delivered by the SW artist. Generated $(Get-Date -Format 'yyyy-MM-dd HH:mm').
 $banner
 
-THE TWO FILES
-  $($f1.Name)
-      $w1 x $h1   covers canvas x $($plate1.x/$div) .. $(($plate1.x+$plate1.w)/$div)
-  $($f2.Name)
-      $w2 x $h2   covers canvas x $($plate2.x/$div) .. $(($plate2.x+$plate2.w)/$div)
-
-  Full canvas is $([int]$Cfg.canvas.w / $div) x $([int]$Cfg.canvas.h / $div). The two plates OVERLAP by
-  $([int]$Cfg.overlap.w / $div) px, between x $([int]$Cfg.overlap.x0 / $div) and x $([int]$Cfg.overlap.x1 / $div).
-  (All figures above are at the rendered 1/$div scale. At full scale the canvas
-  is $($Cfg.canvas.w) x $($Cfg.canvas.h) and the overlap is $([int]$Cfg.overlap.w) px from x $($Cfg.overlap.x0).)
+$fileBlock
 
 THE OVERLAP IS NOT PRE-BLENDED - THIS IS DELIBERATE
   Both plates carry FULL BRIGHTNESS through the overlap, with identical content.
@@ -601,7 +704,8 @@ QUESTIONS
 
 # ---------------------------------------------------------------- done -------
 if ($vrc -eq 0) {
-    Head 'DONE  -  PLATES VERIFIED'
+    Head $(if ($Layout -eq 'Stitched') { 'DONE  -  PREVIEW READY' }
+           else { 'DONE  -  PLATES VERIFIED' })
 } else {
     Head 'DONE  -  BUT VERIFICATION FAILED. DO NOT SEND THESE.'
 }
@@ -620,8 +724,21 @@ if ($vrc -ne 0) {
     Line '  before sending anything to the producer.'
     exit 1
 }
-if ($Layout -eq 'Stitched') {
-    Line '  One stitched 9788x2552 canvas. Send it plus DELIVERY_NOTES.txt.'
+if ($Layout -eq 'Stitched' -and $fit -gt 0) {
+    # NOT split before the -f: a newline there ends the expression and the next
+    # line is parsed as a parameter, which is a syntax error several lines later.
+    Line ("  {0:N2} MB. The whole wall, the whole segment, in one file small" -f ($fc.Length / 1MB))
+    Line  '  enough to put in a message or on a web page.'
+    Line  '  Heavily compressed - judge the timing and the staging on it, not the grain.'
+} elseif ($Layout -eq 'Stitched') {
+    Line ("  The whole wall as one {0} x {1} image, right length, nothing dropped." -f $ecw, $ech)
+    if ($div -gt 1) {
+        Line '  This is a PREVIEW - it is scaled down and the two plates are stitched'
+        Line '  together, so it cannot go to the projectors. Run "Deliver" for those.'
+    } else {
+        Line '  Full resolution and unsplit. Send it plus DELIVERY_NOTES.txt if the'
+        Line '  producer would rather cut the whole wall and slice it themselves.'
+    }
 } elseif ($Layout -eq 'Both') {
     Line '  Both forms, from one render. The two SPSW plates are what matches the'
     Line '  supplied noise; the CANVAS file is the same thing unsplit, if the'
